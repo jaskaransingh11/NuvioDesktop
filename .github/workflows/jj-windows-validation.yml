@@ -49,9 +49,43 @@ jobs:
         shell: pwsh
         run: New-Item -ItemType File -Path local.properties -Force | Out-Null
 
+      - name: Constrain Gradle memory for hosted Windows runner
+        shell: pwsh
+        run: |
+          $content = Get-Content gradle.properties
+          $content = $content -replace '^org\.gradle\.jvmargs=.*
+      - name: Build Windows MSI
+        if: (github.event_name == 'workflow_dispatch' && inputs.package_msi) || (github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'jj/aria2-download-engine')
+        shell: pwsh
+        run: .\gradlew.bat :composeApp:packageReleaseMsi --no-daemon
+
+      - name: Upload MSI
+        if: (github.event_name == 'workflow_dispatch' && inputs.package_msi) || (github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'jj/aria2-download-engine')
+        uses: actions/upload-artifact@v6
+        with:
+          name: nuvio-windows-msi-${{ github.run_id }}
+          path: composeApp/build/compose/binaries/main-release/msi/*.msi
+          if-no-files-found: error
+, 'org.gradle.jvmargs=-Xmx4096M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m'
+          $content = $content -replace '^kotlin\.daemon\.jvmargs=.*
+      - name: Build Windows MSI
+        if: github.event_name == 'workflow_dispatch' && inputs.package_msi
+        shell: pwsh
+        run: .\gradlew.bat :composeApp:packageReleaseMsi --no-daemon
+
+      - name: Upload MSI
+        if: github.event_name == 'workflow_dispatch' && inputs.package_msi
+        uses: actions/upload-artifact@v6
+        with:
+          name: nuvio-windows-msi-${{ github.run_id }}
+          path: composeApp/build/compose/binaries/main-release/msi/*.msi
+          if-no-files-found: error
+, 'kotlin.daemon.jvmargs=-Xmx3072M'
+          Set-Content gradle.properties $content
+
       - name: Compile desktop
         shell: pwsh
-        run: .\gradlew.bat :composeApp:compileKotlinDesktop --no-daemon --max-workers=2 -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m" -Pkotlin.compiler.execution.strategy=in-process
+        run: .\gradlew.bat :composeApp:compileKotlinDesktop --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process
 
       - name: Build Windows MSI
         if: github.event_name == 'workflow_dispatch' && inputs.package_msi
