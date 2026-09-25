@@ -44,16 +44,17 @@ jobs:
           $content = Get-Content gradle.properties
           $content = $content -replace '^org\.gradle\.jvmargs=.*$', 'org.gradle.jvmargs=-Xmx4096M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m'
           $content = $content -replace '^kotlin\.daemon\.jvmargs=.*$', 'kotlin.daemon.jvmargs=-Xmx3072M'
+          $content += 'kotlin.compiler.execution.strategy=in-process'
           Set-Content gradle.properties $content
 
       - name: Compile desktop
         shell: pwsh
-        run: .\gradlew.bat :composeApp:compileKotlinDesktop --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process
+        run: .\gradlew.bat :composeApp:compileKotlinDesktop --no-daemon --max-workers=2
 
       - name: Build Windows MSI
         if: inputs.package_msi
         shell: pwsh
-        run: .\gradlew.bat :composeApp:packageReleaseMsi --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process
+        run: .\gradlew.bat :composeApp:packageReleaseMsi --no-daemon --max-workers=2
 
       - name: Upload MSI
         if: inputs.package_msi
