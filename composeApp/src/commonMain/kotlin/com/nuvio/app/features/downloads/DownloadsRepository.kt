@@ -2,6 +2,10 @@ package com.nuvio.app.features.downloads
 
 import com.nuvio.app.features.player.addonSubtitleRequests
 import com.nuvio.app.features.streams.StreamItem
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,6 +25,7 @@ object DownloadsRepository {
     val uiState: StateFlow<DownloadsUiState> = _uiState.asStateFlow()
 
     private val activeHandles = mutableMapOf<String, DownloadsTaskHandle>()
+    private val downloadScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var hasLoaded = false
     private var nextDownloadOrdinal = 0L
 
@@ -179,6 +184,7 @@ object DownloadsRepository {
             sourceUrl = sourceUrl,
             sourceHeaders = sanitizeRequestHeaders(stream.behaviorHints.proxyHeaders?.request),
             sourceResponseHeaders = sanitizeResponseHeaders(stream.behaviorHints.proxyHeaders?.response),
+            sourceResolve = stream.toDownloadSourceResolve(seasonNumber, episodeNumber),
             subtitleRequests = addonSubtitleRequests(contentType, videoId),
             sourceSubtitles = stream.externalSubtitles,
             localFileUri = null,
@@ -299,7 +305,11 @@ object DownloadsRepository {
             .forEach(::startDownload)
     }
 
-    private fun startDownload(item: DownloadItem, attempt: Int = 1) {
+    private fun startDownload(
+        item: DownloadItem,
+        attempt: Int = 1,
+        sourceRefreshAttempted: Boolean = false,
+    ) {
         val request = DownloadPlatformRequest(item)
 
         val handle = DownloadsPlatformDownloader.start(
@@ -340,20 +350,39 @@ object DownloadsRepository {
                 activeHandles.remove(item.id)
                 val current = _uiState.value.items.firstOrNull { it.id == item.id }
                 if (current?.status == DownloadStatus.Downloading && attempt < MaxDownloadAttempts) {
-                    startDownload(current, attempt + 1)
+                    startDownload(current, attempt + 1, sourceRefreshAttempted)
                     return@onFailure
                 }
-                mutateItem(item.id) { current ->
-                    if (current.status != DownloadStatus.Downloading) {
-                        current
-                    } else {
-                        current.copy(
-                            status = DownloadStatus.Failed,
-                            errorMessage = message.ifBlank { runBlocking { getString(Res.string.download_failed) } },
-                            updatedAtEpochMs = DownloadsClock.nowEpochMs(),
-                        )
+
+                if (
+                    current?.status == DownloadStatus.Downloading &&
+                    !sourceRefreshAttempted &&
+                    current.sourceResolve != null
+                ) {
+                    downloadScope.launch {
+                        val latest = _uiState.value.items.firstOrNull { it.id == item.id }
+                        if (latest?.status != DownloadStatus.Downloading) return@launch
+
+                        val refreshed = runCatching { refreshDownloadSource(latest) }.getOrNull()
+                        val refreshedUrl = refreshed?.url?.trim()?.takeIf { it.isNotBlank() }
+                        if (refreshedUrl != null && refreshedUrl != latest.sourceUrl) {
+                            val refreshedItem = latest.copy(
+                                sourceUrl = refreshedUrl,
+                                totalBytes = refreshed.videoSize?.takeIf { it > 0L } ?: latest.totalBytes,
+                                errorMessage = null,
+                                updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+                            )
+                            replaceItem(refreshedItem)
+                            persist()
+                            startDownload(refreshedItem, attempt = 1, sourceRefreshAttempted = true)
+                        } else {
+                            markDownloadFailed(item.id, message)
+                        }
                     }
+                    return@onFailure
                 }
+
+                markDownloadFailed(item.id, message)
             },
             onPaused = {
                 activeHandles.remove(item.id)
@@ -365,6 +394,21 @@ object DownloadsRepository {
         )
 
         activeHandles[item.id] = handle
+    }
+
+
+    private fun markDownloadFailed(downloadId: String, message: String) {
+        mutateItem(downloadId) { current ->
+            if (current.status != DownloadStatus.Downloading) {
+                current
+            } else {
+                current.copy(
+                    status = DownloadStatus.Failed,
+                    errorMessage = message.ifBlank { runBlocking { getString(Res.string.download_failed) } },
+                    updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+                )
+            }
+        }
     }
 
     private fun mutateItem(downloadId: String, transform: (DownloadItem) -> DownloadItem) {
