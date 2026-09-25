@@ -47,8 +47,10 @@ internal actual object DownloadsPlatformDownloader {
 
     actual fun removePartialFile(destinationFileName: String): Boolean {
         val tempFile = File(downloadsDir, "$destinationFileName.part")
-        if (!tempFile.exists()) return true
-        return runCatching { tempFile.delete() }.getOrDefault(false)
+        val aria2ControlFile = File("${tempFile.absolutePath}.aria2")
+        return runCatching {
+            listOf(tempFile, aria2ControlFile).all { file -> !file.exists() || file.delete() }
+        }.getOrDefault(false)
     }
 
     actual fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? {
