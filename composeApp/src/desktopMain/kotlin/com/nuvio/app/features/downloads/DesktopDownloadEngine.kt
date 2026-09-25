@@ -22,4 +22,10 @@ internal interface DesktopDownloadEngine {
     ): DownloadsTaskHandle
 }
 
-internal fun createDesktopDownloadEngine(): DesktopDownloadEngine = HttpDesktopDownloadEngine
+internal fun createDesktopDownloadEngine(): DesktopDownloadEngine {
+    if (!Aria2DesktopDownloadEngine.isAvailable()) return HttpDesktopDownloadEngine
+    return runCatching {
+        Aria2DesktopDownloadEngine.initialize()
+        Aria2DesktopDownloadEngine
+    }.getOrDefault(HttpDesktopDownloadEngine)
+}
