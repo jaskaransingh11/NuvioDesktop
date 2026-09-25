@@ -6,10 +6,13 @@ import java.io.File
 import java.net.URI
 import kotlin.io.path.createDirectories
 
+private val downloadsDirectoryProvider: () -> File = {
+    File(DesktopStorage.rootDir.resolve("downloads").also { it.createDirectories() }.toUri())
+}
+
 private val desktopDownloadEngine: DesktopDownloadEngine by lazy {
-    HttpDesktopDownloadEngine {
-        File(DesktopStorage.rootDir.resolve("downloads").also { it.createDirectories() }.toUri())
-    }
+    Aria2DesktopDownloadEngine.createOrNull(downloadsDirectoryProvider)
+        ?: HttpDesktopDownloadEngine(downloadsDirectoryProvider)
 }
 
 internal actual object DownloadsPlatformDownloader {
@@ -44,9 +47,12 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     actual fun removePartialFile(destinationFileName: String): Boolean {
+        (desktopDownloadEngine as? Aria2DesktopDownloadEngine)?.discard(destinationFileName)
         val tempFile = File(downloadsDir, "$destinationFileName.part")
-        if (!tempFile.exists()) return true
-        return runCatching { tempFile.delete() }.getOrDefault(false)
+        val controlFile = File(downloadsDir, "$destinationFileName.part.aria2")
+        val tempRemoved = !tempFile.exists() || runCatching { tempFile.delete() }.getOrDefault(false)
+        val controlRemoved = !controlFile.exists() || runCatching { controlFile.delete() }.getOrDefault(false)
+        return tempRemoved && controlRemoved
     }
 
     actual fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? {
