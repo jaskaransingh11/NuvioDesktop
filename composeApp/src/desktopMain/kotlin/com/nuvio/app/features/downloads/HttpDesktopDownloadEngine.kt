@@ -108,7 +108,6 @@ internal object HttpDesktopDownloadEngine : DesktopDownloadEngine {
     ): HttpResponse<java.io.InputStream> {
         val builder = HttpRequest.newBuilder()
             .uri(URI(request.sourceUrl))
-            .timeout(Duration.ofSeconds(60))
             .GET()
         request.sourceHeaders.forEach { (key, value) ->
             if (key.isNotBlank() && value.isNotBlank()) {
