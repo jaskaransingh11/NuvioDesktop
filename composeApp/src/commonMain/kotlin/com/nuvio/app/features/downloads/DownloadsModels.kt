@@ -41,6 +41,7 @@ data class DownloadItem(
     val sourceUrl: String,
     val sourceHeaders: Map<String, String> = emptyMap(),
     val sourceResponseHeaders: Map<String, String> = emptyMap(),
+    val sourceResolve: DownloadSourceResolve? = null,
     val subtitleRequests: List<SubtitleAddonRequest> = emptyList(),
     val sourceSubtitles: List<StreamSubtitle> = emptyList(),
     val localFileUri: String? = null,
@@ -76,6 +77,28 @@ data class DownloadItem(
             "${parentMetaId.trim()}|movie"
         }
 }
+
+
+@Serializable
+data class DownloadSourceResolve(
+    val type: String? = null,
+    val infoHash: String? = null,
+    val fileIdx: Int? = null,
+    val magnetUri: String? = null,
+    val sources: List<String> = emptyList(),
+    val torrentName: String? = null,
+    val filename: String? = null,
+    val mediaType: String? = null,
+    val mediaId: String? = null,
+    val mediaOnlyId: String? = null,
+    val title: String? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
+    val service: String? = null,
+    val serviceIndex: Int? = null,
+    val serviceExtension: String? = null,
+    val isCached: Boolean? = null,
+)
 
 data class DownloadsUiState(
     val items: List<DownloadItem> = emptyList(),
