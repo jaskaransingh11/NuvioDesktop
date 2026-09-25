@@ -1,9 +1,6 @@
 name: JJ Windows Validation
 
 on:
-  pull_request:
-    branches:
-      - Dev
   workflow_dispatch:
     inputs:
       source_ref:
@@ -25,15 +22,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - name: Check out pull request head
-        if: github.event_name == 'pull_request'
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          lfs: true
-
       - name: Check out requested ref
-        if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v6
         with:
           ref: ${{ inputs.source_ref }}
@@ -53,34 +42,8 @@ jobs:
         shell: pwsh
         run: |
           $content = Get-Content gradle.properties
-          $content = $content -replace '^org\.gradle\.jvmargs=.*
-      - name: Build Windows MSI
-        if: (github.event_name == 'workflow_dispatch' && inputs.package_msi) || (github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'jj/aria2-download-engine')
-        shell: pwsh
-        run: .\gradlew.bat :composeApp:packageReleaseMsi --no-daemon
-
-      - name: Upload MSI
-        if: (github.event_name == 'workflow_dispatch' && inputs.package_msi) || (github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'jj/aria2-download-engine')
-        uses: actions/upload-artifact@v6
-        with:
-          name: nuvio-windows-msi-${{ github.run_id }}
-          path: composeApp/build/compose/binaries/main-release/msi/*.msi
-          if-no-files-found: error
-, 'org.gradle.jvmargs=-Xmx4096M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m'
-          $content = $content -replace '^kotlin\.daemon\.jvmargs=.*
-      - name: Build Windows MSI
-        if: github.event_name == 'workflow_dispatch' && inputs.package_msi
-        shell: pwsh
-        run: .\gradlew.bat :composeApp:packageReleaseMsi --no-daemon
-
-      - name: Upload MSI
-        if: github.event_name == 'workflow_dispatch' && inputs.package_msi
-        uses: actions/upload-artifact@v6
-        with:
-          name: nuvio-windows-msi-${{ github.run_id }}
-          path: composeApp/build/compose/binaries/main-release/msi/*.msi
-          if-no-files-found: error
-, 'kotlin.daemon.jvmargs=-Xmx3072M'
+          $content = $content -replace '^org\.gradle\.jvmargs=.*$', 'org.gradle.jvmargs=-Xmx4096M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m'
+          $content = $content -replace '^kotlin\.daemon\.jvmargs=.*$', 'kotlin.daemon.jvmargs=-Xmx3072M'
           Set-Content gradle.properties $content
 
       - name: Compile desktop
@@ -88,12 +51,12 @@ jobs:
         run: .\gradlew.bat :composeApp:compileKotlinDesktop --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process
 
       - name: Build Windows MSI
-        if: github.event_name == 'workflow_dispatch' && inputs.package_msi
+        if: inputs.package_msi
         shell: pwsh
-        run: .\gradlew.bat :composeApp:packageReleaseMsi --no-daemon
+        run: .\gradlew.bat :composeApp:packageReleaseMsi --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process
 
       - name: Upload MSI
-        if: github.event_name == 'workflow_dispatch' && inputs.package_msi
+        if: inputs.package_msi
         uses: actions/upload-artifact@v6
         with:
           name: nuvio-windows-msi-${{ github.run_id }}
