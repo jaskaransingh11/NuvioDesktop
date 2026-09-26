@@ -309,6 +309,7 @@ private class Aria2Sidecar private constructor(
                 "--rpc-listen-all=false",
                 "--rpc-listen-port=$port",
                 "--rpc-secret=$secret",
+                "--stop-with-process=${ProcessHandle.current().pid()}",
                 "--max-concurrent-downloads=2",
                 "--file-allocation=none",
                 "--console-log-level=warn",
