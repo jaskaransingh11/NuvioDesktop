@@ -22,6 +22,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
+import java.io.IOException
 import java.net.ServerSocket
 import java.net.URI
 import java.net.http.HttpClient
@@ -161,6 +162,7 @@ private class Aria2Sidecar private constructor(
     private val json = Json { ignoreUnknownKeys = true }
     private val requestIds = AtomicLong(0L)
     private val gidsByKey = ConcurrentHashMap<String, String>()
+    private val sourceByKey = ConcurrentHashMap<String, String>()
 
     suspend fun startOrResume(
         key: String,
@@ -171,12 +173,15 @@ private class Aria2Sidecar private constructor(
     ): String {
         val existing = gidsByKey[key]
         if (existing != null) {
-            runCatching {
-                changeUri(existing, url)
-                rpc("aria2.unpause", JsonArray(listOf(token(), JsonPrimitive(existing))))
-                return existing
+            // A failed RPC must never turn into a second writer for the same .part file.
+            val previousUrl = sourceByKey[key]
+                ?: error("Previous aria2 source unavailable; partial retained")
+            if (previousUrl != url) {
+                changeUri(existing, previousUrl, url)
+                sourceByKey[key] = url
             }
-            gidsByKey.remove(key, existing)
+            rpc("aria2.unpause", JsonArray(listOf(token(), JsonPrimitive(existing))))
+            return existing
         }
 
         val headerValues = headers
@@ -213,6 +218,7 @@ private class Aria2Sidecar private constructor(
         val gid = result?.jsonPrimitive?.contentOrNull
             ?: error("aria2 did not return a download id")
         gidsByKey[key] = gid
+        sourceByKey[key] = url
         return gid
     }
 
@@ -221,10 +227,8 @@ private class Aria2Sidecar private constructor(
             listOf("status", "totalLength", "completedLength", "errorCode", "errorMessage")
                 .map(::JsonPrimitive),
         )
-        val result = rpc(
-            "aria2.tellStatus",
-            JsonArray(listOf(token(), JsonPrimitive(gid), fields)),
-        )?.jsonObject ?: error("aria2 returned an invalid status response")
+        val result = rpcStatus(gid, fields)?.jsonObject
+            ?: error("aria2 returned an invalid status response")
 
         return Aria2Status(
             status = result.string("status").orEmpty(),
@@ -233,6 +237,20 @@ private class Aria2Sidecar private constructor(
             errorCode = result.string("errorCode"),
             errorMessage = result.string("errorMessage"),
         )
+    }
+
+    // Only read-only status calls are retried: retrying addUri can create duplicate jobs.
+    private suspend fun rpcStatus(gid: String, fields: JsonArray): JsonElement? {
+        var lastError: IOException? = null
+        repeat(3) { attempt ->
+            try {
+                return rpc("aria2.tellStatus", JsonArray(listOf(token(), JsonPrimitive(gid), fields)))
+            } catch (error: IOException) {
+                lastError = error
+                if (attempt < 2) delay(200L * (attempt + 1))
+            }
+        }
+        throw lastError ?: IOException("aria2 status connection failed")
     }
 
     suspend fun pause(key: String) {
@@ -244,6 +262,7 @@ private class Aria2Sidecar private constructor(
 
     suspend fun remove(key: String) {
         val gid = gidsByKey.remove(key) ?: return
+        sourceByKey.remove(key)
         runCatching {
             rpc("aria2.forceRemove", JsonArray(listOf(token(), JsonPrimitive(gid))))
         }
@@ -253,20 +272,38 @@ private class Aria2Sidecar private constructor(
     }
 
     fun forget(key: String, gid: String) {
-        gidsByKey.remove(key, gid)
+        if (gidsByKey.remove(key, gid)) sourceByKey.remove(key)
     }
 
-    private suspend fun changeUri(gid: String, url: String) {
-        rpc(
+    private suspend fun changeUri(gid: String, previousUrl: String, updatedUrl: String) {
+        // A URL change is only safe after the old job has actually paused.
+        check(tellStatus(gid).status == "paused") {
+            "aria2 source change requires a paused job; partial retained"
+        }
+        val current = rpc(
+            "aria2.getUris",
+            JsonArray(listOf(token(), JsonPrimitive(gid))),
+        ) as? JsonArray ?: error("aria2 did not return its source list")
+        val urls = current.mapNotNull { (it as? JsonObject)?.string("uri") }
+        val previous = urls.filter { it == previousUrl }
+        check(previous.isNotEmpty()) {
+            "aria2 previous source could not be verified; partial retained"
+        }
+        val additions = if (updatedUrl in urls) emptyList() else listOf(JsonPrimitive(updatedUrl))
+        val result = rpc(
             "aria2.changeUri",
             buildJsonArray {
                 add(token())
                 add(JsonPrimitive(gid))
                 add(JsonPrimitive(1))
-                add(JsonArray(emptyList()))
-                add(JsonArray(listOf(JsonPrimitive(url))))
+                add(JsonArray(previous.map(::JsonPrimitive)))
+                add(JsonArray(additions))
             },
-        )
+        ) as? JsonArray ?: error("aria2 source replacement did not return counts")
+        val removed = result.firstOrNull()?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+        check(removed == previous.size) {
+            "aria2 did not remove every previous source; partial retained"
+        }
     }
 
     private fun token(): JsonPrimitive = JsonPrimitive("token:$secret")
