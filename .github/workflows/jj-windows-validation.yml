@@ -1,6 +1,11 @@
 name: JJ Windows Validation
 
 on:
+  # Automatically smoke-test workflow edits and seed the trusted Dev dependency cache.
+  push:
+    branches: [Dev]
+    paths:
+      - .github/workflows/jj-windows-validation.yml
   workflow_dispatch:
     inputs:
       source_ref:
@@ -25,7 +30,7 @@ jobs:
       - name: Check out requested ref
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ inputs.source_ref || github.ref_name }}
           lfs: true
 
       - name: Set up Java 17
@@ -40,7 +45,7 @@ jobs:
           # Open-source GitHub Actions cache provider; do not duplicate with setup-java caching.
           cache-provider: basic
           # Only validated Dev checkout may update the shared cache. Other source refs read it.
-          cache-read-only: ${{ inputs.source_ref != 'Dev' }}
+          cache-read-only: ${{ (inputs.source_ref || 'Dev') != 'Dev' }}
 
       - name: Create local build config
         shell: pwsh
