@@ -2,7 +2,7 @@ name: JJ Isolated Desktop Auth Validation
 
 on:
   push:
-    branches: [fix/desktop-test-auth-storage-20260927, fix/download-container-extension-20260927, fix/production-resume-guards-20260928]
+    branches: [fix/desktop-test-auth-storage-20260927, fix/download-container-extension-20260927, fix/production-resume-guards-20260928, fix/nuvio-nondestructive-enqueue-20260928]
   workflow_dispatch:
 
 permissions:
