@@ -171,17 +171,31 @@ private class Aria2Sidecar private constructor(
         directory: File,
         outputFileName: String,
     ): String {
+        val partial = File(directory, outputFileName)
         val existing = gidsByKey[key]
         if (existing != null) {
             // A failed RPC must never turn into a second writer for the same .part file.
             val previousUrl = sourceByKey[key]
                 ?: error("Previous aria2 source unavailable; partial retained")
             if (previousUrl != url) {
+                // Without a verified strong validator, a new signed URL may point at
+                // different content of the same length. Keep every downloaded byte
+                // intact rather than silently mixing files.
+                check(tellStatus(existing).completedLength == 0L &&
+                    (!partial.exists() || partial.length() == 0L)) {
+                    "Cannot refresh a nonempty partial without verified file identity; partial retained"
+                }
                 changeUri(existing, previousUrl, url)
                 sourceByKey[key] = url
             }
             rpc("aria2.unpause", JsonArray(listOf(token(), JsonPrimitive(existing))))
             return existing
+        }
+
+        // A fresh aria2 sidecar has no trusted source/ETag record for a saved
+        // .part (including a legacy native-HTTP partial). Never reinterpret it.
+        check(!partial.exists() || partial.length() == 0L) {
+            "Cannot resume pre-existing partial without verified file identity; partial retained"
         }
 
         val headerValues = headers
