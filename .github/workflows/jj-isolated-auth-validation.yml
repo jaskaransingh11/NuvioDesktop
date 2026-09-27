@@ -38,6 +38,9 @@ jobs:
           $content = $content -replace '^kotlin\.daemon\.jvmargs=.*$', 'kotlin.daemon.jvmargs=-Xmx3072M'
           $content += 'kotlin.compiler.execution.strategy=in-process'
           Set-Content gradle.properties $content
-      - name: Compile desktop and run auth-isolation tests
+      - name: Compile desktop
         shell: pwsh
-        run: .\gradlew.bat :composeApp:compileKotlinDesktop :composeApp:desktopTest --no-daemon --max-workers=2
+        run: .\gradlew.bat :composeApp:compileKotlinDesktop --no-configuration-cache --no-daemon --max-workers=2
+      - name: Run pure desktop auth-isolation tests without native player bridge
+        shell: pwsh
+        run: .\gradlew.bat :composeApp:desktopTest --tests "com.nuvio.app.core.network.PlatformAuthSessionManagerTest" -x :composeApp:buildWindowsPlayerBridge --no-configuration-cache --no-daemon --max-workers=2
