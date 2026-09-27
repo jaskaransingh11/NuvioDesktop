@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.downloads_enqueue_missing_url
 import nuvio.composeapp.generated.resources.downloads_enqueue_replaced
+import nuvio.composeapp.generated.resources.downloads_enqueue_already_present
 import nuvio.composeapp.generated.resources.downloads_enqueue_started
 import nuvio.composeapp.generated.resources.downloads_enqueue_unsupported_format
 import org.jetbrains.compose.resources.getString
@@ -113,6 +114,7 @@ data class DownloadsUiState(
 enum class DownloadEnqueueResult {
     Started,
     Replaced,
+    AlreadyPresent,
     MissingUrl,
     UnsupportedFormat;
 
@@ -120,12 +122,20 @@ enum class DownloadEnqueueResult {
         when (this@DownloadEnqueueResult) {
             Started -> getString(Res.string.downloads_enqueue_started)
             Replaced -> getString(Res.string.downloads_enqueue_replaced)
+            AlreadyPresent -> getString(Res.string.downloads_enqueue_already_present)
             MissingUrl -> getString(Res.string.downloads_enqueue_missing_url)
             UnsupportedFormat -> getString(Res.string.downloads_enqueue_unsupported_format)
         }
     }
 }
 
+/**
+ * Selection of another stream is not an instruction to delete existing bytes.
+ * Reuse the same policy for queued, paused, failed and completed downloads.
+ * The confirmed Delete action in Downloads is the destructive path.
+ */
+internal fun List<DownloadItem>.duplicateEnqueueResult(logicalKey: String): DownloadEnqueueResult? =
+    if (any { it.logicalContentKey == logicalKey }) DownloadEnqueueResult.AlreadyPresent else null
 internal fun List<DownloadItem>.sortedForSeriesDownloads(): List<DownloadItem> =
     sortedWith(downloadSeriesEpisodeComparator)
 
