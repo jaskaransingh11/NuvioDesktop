@@ -4,6 +4,7 @@ import com.nuvio.app.core.build.AppVersionConfig
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.annotations.SupabaseInternal
 import io.github.jan.supabase.auth.Auth
+import io.github.jan.supabase.auth.MemoryCodeVerifierCache
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.functions.Functions
 import io.github.jan.supabase.postgrest.Postgrest
@@ -100,7 +101,13 @@ object SupabaseProvider {
                     headers.append(HttpHeaders.UserAgent, userAgent)
                 }
             }
-            install(Auth)
+            install(Auth) {
+                platformIsolatedAuthSessionManager(configuration.backendUrl)?.let { isolated ->
+                    sessionManager = isolated
+                    // Do not share OAuth PKCE verifier state with the regular app.
+                    codeVerifierCache = MemoryCodeVerifierCache()
+                }
+            }
             install(Postgrest)
             install(Functions)
             install(Storage)
