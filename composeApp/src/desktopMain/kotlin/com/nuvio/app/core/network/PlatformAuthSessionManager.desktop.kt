@@ -2,11 +2,13 @@ package com.nuvio.app.core.network
 
 import io.github.jan.supabase.auth.SessionManager
 import io.github.jan.supabase.auth.SettingsSessionManager
+import com.russhwolf.settings.PreferencesSettings
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.prefs.Preferences
 
 private const val TEST_FLAG = "NUVIO_TEST_AUTH_ISOLATION"
 private const val MARKER_FILE = ".nuvio-test-auth-isolation"
@@ -40,7 +42,17 @@ internal actual fun platformIsolatedAuthSessionManager(backendUrl: String): Sess
     require(Files.isRegularFile(marker) && Files.readString(marker).trim() == MARKER_TEXT) {
         "$TEST_FLAG requires a test-only marker inside isolated APPDATA"
     }
-    return SettingsSessionManager(key = isolatedAuthSessionKey(appData, backendUrl))
+    // The 3.4.1 SDK automatically migrates a legacy global "session" entry
+    // when only a new key is supplied. A unique key in userRoot() is therefore
+    // NOT isolation: it can copy and delete the installed app's saved login.
+    // Isolate the entire Preferences NODE, and use the default key within it,
+    // so the SDK's legacy migration never examines the production root.
+    val scope = isolatedAuthSessionKey(appData, backendUrl)
+    val node = Preferences.userRoot().node("/com/nuvio/isolated-test/$scope")
+    return SettingsSessionManager(
+        settings = PreferencesSettings(node),
+        key = "session",
+    )
 }
 
 /**
