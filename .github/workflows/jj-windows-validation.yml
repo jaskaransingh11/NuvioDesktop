@@ -92,7 +92,10 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: nuvio-windows-msi-${{ github.run_id }}
-          path: |
-            composeApp/build/compose/release-msis/*.msi
-            composeApp/build/compose/binaries/main-release/msi/*.msi
+          # release-msis already contains the final MSI; do not archive its
+          # identical build-directory copies a second or third time.
+          path: composeApp/build/compose/release-msis/*.msi
           if-no-files-found: error
+          retention-days: 30
+          # MSI is already compressed internally; avoid redundant ZIP work.
+          compression-level: 0
