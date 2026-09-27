@@ -34,6 +34,14 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Restore Gradle dependency cache
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          # Open-source GitHub Actions cache provider; do not duplicate with setup-java caching.
+          cache-provider: basic
+          # Only validated Dev checkout may update the shared cache. Other source refs read it.
+          cache-read-only: ${{ inputs.source_ref != 'Dev' }}
+
       - name: Create local build config
         shell: pwsh
         run: New-Item -ItemType File -Path local.properties -Force | Out-Null
