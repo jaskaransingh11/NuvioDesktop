@@ -1,9 +1,14 @@
 package com.nuvio.app.core.network
 
 import java.nio.file.Paths
+import java.util.UUID
+import java.util.prefs.Preferences
+import com.russhwolf.settings.PreferencesSettings
+import io.github.jan.supabase.auth.SettingsSessionManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class PlatformAuthSessionManagerTest {
@@ -27,4 +32,32 @@ class PlatformAuthSessionManagerTest {
         assertTrue(!first.contains("backend-a"))
         assertTrue(!first.contains("NuvioIsolatedTest"))
     }
+    @Test
+    fun test_session_manager_cannot_import_a_siblings_legacy_session() {
+        // Never inspect or mutate the real Preferences.userRoot() session.
+        val root = Preferences.userRoot()
+            .node("/com/nuvio/unit-test-isolation-${UUID.randomUUID()}")
+        val simulatedProduction = root.node("ordinary-production")
+        val isolated = root.node("isolated-test")
+        try {
+            simulatedProduction.put("session", "synthetic-marker-not-a-credential")
+            root.flush()
+            assertNull(isolated.get("session", null))
+            // SDK 3.4.1 migrates a legacy "session" for custom keys.
+            // The isolated node and ordinary key together prevent that.
+            SettingsSessionManager(
+                settings = PreferencesSettings(isolated),
+                key = "session",
+            )
+            assertEquals(
+                "synthetic-marker-not-a-credential",
+                simulatedProduction.get("session", null),
+            )
+            assertNull(isolated.get("session", null))
+        } finally {
+            root.removeNode()
+            root.flush()
+        }
+    }
+
 }
