@@ -160,6 +160,7 @@ object DownloadsRepository {
             episodeTitle = episodeTitle,
             fallbackTitle = stream.streamLabel,
             sourceUrl = sourceUrl,
+            suggestedFilename = stream.behaviorHints.filename ?: stream.clientResolve?.filename,
             downloadId = downloadId,
         )
 
@@ -558,6 +559,7 @@ private fun buildFileName(
     episodeTitle: String?,
     fallbackTitle: String,
     sourceUrl: String,
+    suggestedFilename: String?,
     downloadId: String,
 ): String {
     val baseTitle = if (seasonNumber != null && episodeNumber != null) {
@@ -576,7 +578,7 @@ private fun buildFileName(
         title.ifBlank { fallbackTitle }
     }
 
-    val extension = sourceUrl.fileExtensionFromUrl()
+    val extension = downloadExtensionFromMetadata(suggestedFilename, sourceUrl)
     return buildString {
         append(baseTitle.sanitizeFileName().ifBlank { "download" }.take(92))
         append('_')
@@ -586,6 +588,20 @@ private fun buildFileName(
     }
 }
 
+/**
+ * Signed debrid URLs can be opaque while the selected media is Matroska.
+ * Prefer resolved filename metadata; only accept safe media extensions
+ * from untrusted addon hints before using the legacy URL fallback.
+ */
+internal fun downloadExtensionFromMetadata(suggestedFilename: String?, sourceUrl: String): String {
+    val hintExtension = suggestedFilename
+        ?.substringAfterLast('/')
+        ?.substringAfterLast('\\')
+        ?.substringAfterLast('.', missingDelimiterValue = "")
+        ?.lowercase()
+        ?.takeIf { it in setOf("mkv", "mp4", "m4v", "webm", "mov", "avi", "ts", "m2ts", "mpeg", "mpg", "flv", "wmv", "wav", "mp3") }
+    return hintExtension ?: sourceUrl.fileExtensionFromUrl()
+}
 private fun String.sanitizeFileName(): String =
     trim().replace(Regex("[^A-Za-z0-9._ -]"), "_")
 
