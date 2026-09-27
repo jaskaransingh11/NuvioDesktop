@@ -1,0 +1,86 @@
+name: JJ Isolated Desktop Auth Validation
+
+on:
+  push:
+    branches: [fix/desktop-test-auth-storage-20260927]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Check out this exact branch commit
+        uses: actions/checkout@v6
+        with:
+          lfs: false
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Read-only Gradle dependency cache
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          cache-read-only: true
+      - name: Validate protected login client config
+        shell: pwsh
+        env:
+          NUVIO_SUPABASE_URL: ${{ secrets.NUVIO_SUPABASE_URL }}
+          NUVIO_SUPABASE_ANON_KEY: ${{ secrets.NUVIO_SUPABASE_ANON_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:NUVIO_SUPABASE_URL) -or -not $env:NUVIO_SUPABASE_URL.Trim().StartsWith('https://')) {
+            throw 'Missing or invalid NUVIO_SUPABASE_URL. Refuse to build a login-disabled MSI.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:NUVIO_SUPABASE_ANON_KEY) -or $env:NUVIO_SUPABASE_ANON_KEY.Trim().Length -lt 80) {
+            throw 'Missing NUVIO_SUPABASE_ANON_KEY. Refuse to build a login-disabled MSI.'
+          }
+          $entries = @(
+            'NUVIO_SUPABASE_URL=' + $env:NUVIO_SUPABASE_URL.Trim()
+            'NUVIO_SUPABASE_ANON_KEY=' + $env:NUVIO_SUPABASE_ANON_KEY.Trim()
+          )
+          [System.IO.File]::WriteAllLines((Join-Path (Get-Location).Path 'local.properties'), [string[]]$entries, [System.Text.UTF8Encoding]::new($false))
+          Write-Output 'Required public client config injected privately; values withheld.'
+      - name: Limit Gradle RAM
+        shell: pwsh
+        run: |
+          $content = Get-Content gradle.properties
+          $content = $content -replace '^org\.gradle\.jvmargs=.*$', 'org.gradle.jvmargs=-Xmx4096M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m'
+          $content = $content -replace '^kotlin\.daemon\.jvmargs=.*$', 'kotlin.daemon.jvmargs=-Xmx3072M'
+          $content += 'kotlin.compiler.execution.strategy=in-process'
+          Set-Content gradle.properties $content
+      - name: Compile desktop
+        shell: pwsh
+        run: .\gradlew.bat :composeApp:compileKotlinDesktop --no-configuration-cache --no-daemon --max-workers=2
+      - name: Run pure desktop auth-isolation tests without native player bridge
+        shell: pwsh
+        run: .\gradlew.bat :composeApp:desktopTest --tests "com.nuvio.app.core.network.PlatformAuthSessionManagerTest" -x :composeApp:buildWindowsPlayerBridge --no-configuration-cache --no-daemon --max-workers=2
+      - name: Fetch native Windows runtime from Git LFS
+        shell: bash
+        run: |
+          git lfs pull --include="composeApp/src/desktopMain/native/windows/runtime/**,composeApp/src/desktopMain/resources/torrserver/windows-amd64/TorrServer.exe" --exclude=""
+          test -s composeApp/src/desktopMain/native/windows/runtime/libmpv-2.dll
+          test -s composeApp/src/desktopMain/resources/torrserver/windows-amd64/TorrServer.exe
+      - name: Install WebView2 native SDK
+        shell: pwsh
+        run: |
+          nuget install Microsoft.Web.WebView2 -Version 1.0.4078.44 -OutputDirectory "$env:RUNNER_TEMP\nuget" -DirectDownload -NonInteractive -NoCache
+          $root = Join-Path $env:RUNNER_TEMP 'nuget\Microsoft.Web.WebView2.1.0.4078.44'
+          $linkerLibrary = Join-Path $root 'build\native\x64\WebView2Loader.dll.lib'
+          if (-not (Test-Path -LiteralPath $linkerLibrary)) { throw 'WebView2 import library unavailable' }
+          "WEBVIEW2_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Build standalone MSI with validated client config
+        shell: pwsh
+        run: .\gradlew.bat :composeApp:packageReleaseMsi "-Pnuvio.webview2.dir=$env:WEBVIEW2_ROOT" "-Pcompose.desktop.packaging.checkJdkVendor=false" --no-configuration-cache --no-daemon --max-workers=2
+      - name: Upload standalone MSI only
+        uses: actions/upload-artifact@v6
+        with:
+          name: nuvio-isolated-auth-msi-${{ github.run_id }}
+          path: composeApp/build/compose/release-msis/*.msi
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
