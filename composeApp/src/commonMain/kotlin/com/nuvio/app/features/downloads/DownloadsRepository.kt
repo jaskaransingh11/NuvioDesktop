@@ -141,15 +141,11 @@ object DownloadsRepository {
             episodeNumber = episodeNumber,
         )
 
-        var replacedExisting = false
         val currentItems = _uiState.value.items.toMutableList()
-        val existing = currentItems.firstOrNull { it.logicalContentKey == logicalKey }
-        if (existing != null) {
-            replacedExisting = true
-            activeHandles.remove(existing.id)?.cancel()
-            DownloadsPlatformDownloader.removeFile(playableLocalFileUri(existing) ?: existing.localFileUri)
-            DownloadsPlatformDownloader.removePartialFile(existing.fileName)
-            currentItems.removeAll { it.id == existing.id }
+        if (currentItems.duplicateEnqueueResult(logicalKey) != null) {
+            // Selecting a stream again must never silently erase an existing
+            // partial or complete file; explicit removal is confirmed in Downloads.
+            return DownloadEnqueueResult.AlreadyPresent
         }
 
         val downloadId = nextDownloadId(now)
@@ -203,11 +199,7 @@ object DownloadsRepository {
         persist()
         startDownload(item)
 
-        return if (replacedExisting) {
-            DownloadEnqueueResult.Replaced
-        } else {
-            DownloadEnqueueResult.Started
-        }
+        return DownloadEnqueueResult.Started
     }
 
     fun pauseDownload(downloadId: String) {

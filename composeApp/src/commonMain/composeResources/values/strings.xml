@@ -1932,6 +1932,7 @@
     <string name="details_episode_badge_file">FILE</string>
     <string name="downloads_enqueue_missing_url">No direct stream link available</string>
     <string name="downloads_enqueue_replaced">Replaced previous download</string>
+    <string name="downloads_enqueue_already_present">Already in Downloads. Manage or delete it there before downloading again.</string>
     <string name="downloads_enqueue_started">Download started</string>
     <string name="downloads_enqueue_unsupported_format">Unsupported stream format for downloads</string>
     <string name="downloads_error_empty_body">Empty response body</string>

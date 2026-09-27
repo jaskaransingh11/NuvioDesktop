@@ -2,7 +2,7 @@ name: JJ Isolated Desktop Auth Validation
 
 on:
   push:
-    branches: [fix/desktop-test-auth-storage-20260927, fix/download-container-extension-20260927]
+    branches: [fix/desktop-test-auth-storage-20260927, fix/download-container-extension-20260927, fix/nuvio-nondestructive-enqueue-20260928]
   workflow_dispatch:
 
 permissions:
@@ -62,6 +62,9 @@ jobs:
       - name: Run download filename extension regression tests
         shell: pwsh
         run: .\gradlew.bat :composeApp:desktopTest --tests "com.nuvio.app.features.downloads.DownloadFileExtensionTest" -x :composeApp:buildWindowsPlayerBridge --no-configuration-cache --no-daemon --max-workers=2
+      - name: Run duplicate-download preservation policy tests
+        shell: pwsh
+        run: .\gradlew.bat :composeApp:desktopTest --tests "com.nuvio.app.features.downloads.DuplicateEnqueuePolicyTest" -x :composeApp:buildWindowsPlayerBridge --no-configuration-cache --no-daemon --max-workers=2
       - name: Fetch native Windows runtime from Git LFS
         shell: bash
         run: |
