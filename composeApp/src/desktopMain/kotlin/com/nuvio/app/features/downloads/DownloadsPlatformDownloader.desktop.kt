@@ -47,6 +47,7 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     actual fun removePartialFile(destinationFileName: String): Boolean {
+        DesktopDownloadDiagnostics.log("remove-partial", destinationFileName, null)
         (desktopDownloadEngine as? Aria2DesktopDownloadEngine)?.discard(destinationFileName)
         val tempFile = File(downloadsDir, "$destinationFileName.part")
         val controlFile = File(downloadsDir, "$destinationFileName.part.aria2")

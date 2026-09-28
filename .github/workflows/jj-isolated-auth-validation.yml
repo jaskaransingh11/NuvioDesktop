@@ -61,7 +61,7 @@ jobs:
         run: .\gradlew.bat :composeApp:desktopTest --tests "com.nuvio.app.core.network.PlatformAuthSessionManagerTest" -x :composeApp:buildWindowsPlayerBridge --no-configuration-cache --no-daemon --max-workers=2
       - name: Run download filename extension regression tests
         shell: pwsh
-        run: .\gradlew.bat :composeApp:desktopTest --tests "com.nuvio.app.features.downloads.DownloadFileExtensionTest" --tests "com.nuvio.app.features.downloads.DownloadContentIdentityTest" --tests "com.nuvio.app.features.downloads.DownloadFailurePolicyTest" --tests "com.nuvio.app.features.downloads.Aria2ResumeIdentityTest" -x :composeApp:buildWindowsPlayerBridge --no-configuration-cache --no-daemon --max-workers=2
+        run: .\gradlew.bat :composeApp:desktopTest --tests "com.nuvio.app.features.downloads.DownloadFileExtensionTest" --tests "com.nuvio.app.features.downloads.DownloadContentIdentityTest" --tests "com.nuvio.app.features.downloads.DownloadFailurePolicyTest" --tests "com.nuvio.app.features.downloads.Aria2ResumeIdentityTest" --tests "com.nuvio.app.features.downloads.DesktopDownloadDiagnosticsTest" -x :composeApp:buildWindowsPlayerBridge --no-configuration-cache --no-daemon --max-workers=2
       - name: Fetch native Windows runtime from Git LFS
         shell: bash
         run: |

@@ -379,6 +379,7 @@ object DownloadsRepository {
                 }
 
                 if (
+                    failureAction == DownloadFailureAction.RetrySameSource &&
                     !sourceRefreshAttempted &&
                     current.sourceResolve != null
                 ) {

@@ -52,6 +52,12 @@ internal class Aria2DesktopDownloadEngine private constructor(
             val directory = downloadsDirectory()
             val destination = File(directory, request.destinationFileName)
             val partial = File(directory, "${request.destinationFileName}.part")
+            DesktopDownloadDiagnostics.log(
+                event = "start",
+                destinationFileName = request.destinationFileName,
+                sourceUrl = request.sourceUrl,
+                detail = "partialBytes=${partial.takeIf { it.exists() }?.length() ?: 0L};identity=${request.stableContentIdentity != null}",
+            )
 
             try {
                 val gid = sidecar.startOrResume(
@@ -71,6 +77,7 @@ internal class Aria2DesktopDownloadEngine private constructor(
 
                     when (status.status) {
                         "complete" -> {
+                            DesktopDownloadDiagnostics.log("complete", request.destinationFileName, request.sourceUrl, "bytes=${status.completedLength}")
                             sidecar.forget(request.destinationFileName, gid)
                             if (destination.exists()) destination.delete()
                             if (!partial.renameTo(destination)) {
@@ -85,6 +92,7 @@ internal class Aria2DesktopDownloadEngine private constructor(
                         }
 
                         "error", "removed" -> {
+                            DesktopDownloadDiagnostics.log("error", request.destinationFileName, request.sourceUrl, "ariaCode=${status.errorCode.orEmpty()}")
                             sidecar.forget(request.destinationFileName, gid)
                             val detail = status.errorMessage?.takeIf { it.isNotBlank() }
                                 ?: status.errorCode?.let { "aria2 error code $it" }
@@ -94,6 +102,7 @@ internal class Aria2DesktopDownloadEngine private constructor(
                         }
 
                         "paused" -> {
+                            DesktopDownloadDiagnostics.log("paused", request.destinationFileName, request.sourceUrl, "bytes=${status.completedLength}")
                             onPaused()
                             return@launch
                         }
@@ -194,6 +203,12 @@ private class Aria2Sidecar private constructor(
                         "Cannot refresh a nonempty partial without matching persisted file identity; partial retained"
                     }
                 }
+                DesktopDownloadDiagnostics.log(
+                    event = "source-refresh",
+                    destinationFileName = key,
+                    sourceUrl = url,
+                    detail = "hasBytes=$hasBytes;identityMatched=${stableContentIdentity != null && stableContentIdentity == previousIdentity}",
+                )
                 changeUri(existing, previousUrl, url)
                 sourceByKey[key] = url
                 stableContentIdentity?.let { identityByKey[key] = it }
@@ -205,6 +220,12 @@ private class Aria2Sidecar private constructor(
         val ariaControl = File(partial.absolutePath + ".aria2")
         val hasPreExistingPartial = partial.exists() && partial.length() > 0L
         if (hasPreExistingPartial) {
+            DesktopDownloadDiagnostics.log(
+                event = "restart-resume-check",
+                destinationFileName = key,
+                sourceUrl = url,
+                detail = "partialBytes=${partial.length()};control=${ariaControl.exists()};identity=${stableContentIdentity != null}",
+            )
             val persistedIdentity = identityFile.takeIf { it.isFile }
                 ?.readText(Charsets.UTF_8)
                 ?.trim()
