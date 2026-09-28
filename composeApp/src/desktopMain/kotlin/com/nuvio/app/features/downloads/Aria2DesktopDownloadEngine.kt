@@ -78,6 +78,7 @@ internal class Aria2DesktopDownloadEngine private constructor(
                                 partial.delete()
                             }
                             File(partial.absolutePath + ".aria2").delete()
+                            File(partial.absolutePath + ".identity").delete()
                             val finalSize = destination.length()
                             onSuccess(destination.toURI().toString(), total ?: finalSize)
                             return@launch
@@ -175,6 +176,7 @@ private class Aria2Sidecar private constructor(
         stableContentIdentity: String?,
     ): String {
         val partial = File(directory, outputFileName)
+        val identityFile = File(partial.absolutePath + ".identity")
         val existing = gidsByKey[key]
         if (existing != null) {
             // A failed RPC must never turn into a second writer for the same .part file.
@@ -185,8 +187,11 @@ private class Aria2Sidecar private constructor(
                 val hasBytes = tellStatus(existing).completedLength > 0L ||
                     (partial.exists() && partial.length() > 0L)
                 if (hasBytes) {
-                    check(!stableContentIdentity.isNullOrBlank() && stableContentIdentity == previousIdentity) {
-                        "Cannot refresh a nonempty partial without matching stable file identity; partial retained"
+                    val persistedIdentity = identityFile.takeIf { it.isFile }
+                        ?.readText(Charsets.UTF_8)
+                        ?.trim()
+                    check(matchesActiveResumeIdentity(stableContentIdentity, previousIdentity, persistedIdentity)) {
+                        "Cannot refresh a nonempty partial without matching persisted file identity; partial retained"
                     }
                 }
                 changeUri(existing, previousUrl, url)
@@ -200,8 +205,23 @@ private class Aria2Sidecar private constructor(
         val ariaControl = File(partial.absolutePath + ".aria2")
         val hasPreExistingPartial = partial.exists() && partial.length() > 0L
         if (hasPreExistingPartial) {
-            check(!stableContentIdentity.isNullOrBlank() && ariaControl.exists() && ariaControl.length() > 0L) {
-                "Cannot resume pre-existing partial without stable file identity and aria2 control state; partial retained"
+            val persistedIdentity = identityFile.takeIf { it.isFile }
+                ?.readText(Charsets.UTF_8)
+                ?.trim()
+            check(
+                matchesPersistedResumeIdentity(
+                    stableContentIdentity,
+                    persistedIdentity,
+                    ariaControl.exists() && ariaControl.length() > 0L,
+                )
+            ) {
+                "Cannot resume pre-existing partial without matching persisted identity and aria2 control state; partial retained"
+            }
+        } else {
+            if (stableContentIdentity.isNullOrBlank()) {
+                if (identityFile.exists()) identityFile.delete()
+            } else {
+                identityFile.writeText(stableContentIdentity, Charsets.UTF_8)
             }
         }
 

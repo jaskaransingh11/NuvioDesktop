@@ -50,9 +50,11 @@ internal actual object DownloadsPlatformDownloader {
         (desktopDownloadEngine as? Aria2DesktopDownloadEngine)?.discard(destinationFileName)
         val tempFile = File(downloadsDir, "$destinationFileName.part")
         val controlFile = File(downloadsDir, "$destinationFileName.part.aria2")
+        val identityFile = File(downloadsDir, "$destinationFileName.part.identity")
         val tempRemoved = !tempFile.exists() || runCatching { tempFile.delete() }.getOrDefault(false)
         val controlRemoved = !controlFile.exists() || runCatching { controlFile.delete() }.getOrDefault(false)
-        return tempRemoved && controlRemoved
+        val identityRemoved = !identityFile.exists() || runCatching { identityFile.delete() }.getOrDefault(false)
+        return tempRemoved && controlRemoved && identityRemoved
     }
 
     actual fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? {
