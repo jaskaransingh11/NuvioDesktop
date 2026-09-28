@@ -1,0 +1,37 @@
+name: JJ NuvioMobile Upstream Host Baseline
+
+on:
+  push:
+    branches: [feature/mobile-multirange-prototype-20260929]
+    paths: [.github/workflows/jj-android-upstream-baseline.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-host-regression-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Clone unmodified pinned Android source
+        run: |
+          git clone --quiet --depth 1 --filter=blob:none --branch cmp-rewrite https://github.com/NuvioMedia/NuvioMobile.git mobile
+          cd mobile
+          git fetch --quiet --depth 1 origin fc4608d2928c805fdf368399bff39f17bb55b4da
+          git checkout --quiet --detach fc4608d2928c805fdf368399bff39f17bb55b4da
+          test "$(git rev-parse HEAD)" = fc4608d2928c805fdf368399bff39f17bb55b4da
+          touch local.properties
+
+      - name: Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Full upstream Android host tests (no prototype patch)
+        working-directory: mobile
+        run: ./gradlew :composeApp:testAndroidHostTest -Pnuvio.android.distribution=full -Pnuvio.ios.distribution=appstore --no-daemon --max-workers=2 --stacktrace
