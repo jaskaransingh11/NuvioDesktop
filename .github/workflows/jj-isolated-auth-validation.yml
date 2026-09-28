@@ -92,15 +92,17 @@ jobs:
           function Read-MsiProperty([string]$name) {
             $view = $db.OpenView("SELECT Value FROM Property WHERE Property='$name'")
             try {
-              $view.Execute()
+              $null = $view.Execute()
               $record = $view.Fetch()
               if (-not $record) { throw "MSI missing expected property: $name" }
               return $record.StringData(1)
             } finally {
-              $view.Close()
+              $null = $view.Close()
             }
           }
-          if ((Read-MsiProperty 'ProductVersion') -ne '1.1.27') { throw 'MSI is not version 1.1.27' }
+          $actualVersion = [string](Read-MsiProperty 'ProductVersion')
+          Write-Output ("Canary MSI ProductVersion = '" + $actualVersion + "'")
+          if ($actualVersion.Trim() -ne '1.1.27') { throw 'MSI is not version 1.1.27' }
           if ((Read-MsiProperty 'UpgradeCode') -ne '{395990EE-9B8A-3548-922C-E7A23A495B8D}') {
             throw 'MSI UpgradeCode differs from the installed 1.1.26 product'
           }
