@@ -1,0 +1,64 @@
+name: JJ NuvioMobile Multirange Prototype
+
+on:
+  push:
+    branches: [feature/mobile-multirange-prototype-20260929]
+    paths:
+      - "ports/nuvio-mobile/**"
+      - ".github/workflows/jj-android-multirange.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jj-nuvio-mobile-multirange-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-host-tests-and-apk:
+    name: Android host tests and isolated debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout patch-only workspace
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            ports/nuvio-mobile
+
+      - name: Checkout pinned NuvioMobile source
+        run: |
+          git clone --quiet --depth 1 --filter=blob:none --branch cmp-rewrite https://github.com/NuvioMedia/NuvioMobile.git mobile
+          cd mobile
+          git fetch --quiet --depth 1 origin fc4608d2928c805fdf368399bff39f17bb55b4da
+          git checkout --quiet --detach fc4608d2928c805fdf368399bff39f17bb55b4da
+          git apply --check ../ports/nuvio-mobile/android-multirange.patch
+          git apply ../ports/nuvio-mobile/android-multirange.patch
+          touch local.properties
+
+      - name: Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Android host regression tests
+        working-directory: mobile
+        run: ./gradlew :composeApp:testAndroidHostTest -Pnuvio.android.distribution=full -Pnuvio.ios.distribution=appstore --no-daemon --max-workers=2 --stacktrace
+
+      - name: Isolated fullDebug APK
+        working-directory: mobile
+        run: ./gradlew :androidApp:assembleFullDebug -Pnuvio.android.distribution=full -Pnuvio.ios.distribution=appstore --no-daemon --max-workers=2 --stacktrace
+
+      - name: Upload test APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuvio-mobile-multirange-unverified-${{ github.run_id }}
+          path: mobile/androidApp/build/outputs/apk/full/debug/androidApp-full-debug.apk
+          if-no-files-found: error
+          retention-days: 7
