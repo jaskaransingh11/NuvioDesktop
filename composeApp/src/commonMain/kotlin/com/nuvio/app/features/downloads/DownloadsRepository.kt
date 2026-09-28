@@ -193,7 +193,7 @@ object DownloadsRepository {
             fileName = fileName,
             status = DownloadStatus.Downloading,
             downloadedBytes = 0L,
-            totalBytes = null,
+            totalBytes = stream.behaviorHints.videoSize?.takeIf { it > 0L },
             errorMessage = null,
             createdAtEpochMs = now,
             updatedAtEpochMs = now,
