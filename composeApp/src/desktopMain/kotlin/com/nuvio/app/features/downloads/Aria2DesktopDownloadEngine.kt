@@ -490,7 +490,7 @@ private fun extractBundledAria2(): File? {
     val stream = Aria2DesktopDownloadEngine::class.java.getResourceAsStream(BUNDLED_ARIA2_RESOURCE)
         ?: return null
     val temp = File(dir, "aria2c.exe.tmp")
-    runCatching {
+    return runCatching {
         stream.use { input ->
             temp.outputStream().use { output -> input.copyTo(output) }
         }
