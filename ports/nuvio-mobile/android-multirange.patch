@@ -1,6 +1,18 @@
+diff --git a/composeApp/src/androidHostTest/kotlin/com/nuvio/app/features/downloads/AndroidDownloadTransferTest.kt b/composeApp/src/androidHostTest/kotlin/com/nuvio/app/features/downloads/AndroidDownloadTransferTest.kt
+index 362a3b5..aa5dc94 100644
+--- a/composeApp/src/androidHostTest/kotlin/com/nuvio/app/features/downloads/AndroidDownloadTransferTest.kt
++++ b/composeApp/src/androidHostTest/kotlin/com/nuvio/app/features/downloads/AndroidDownloadTransferTest.kt
+@@ -125,6 +125,7 @@ class AndroidDownloadTransferTest {
+         assertTrue(shouldRetryAndroidDownload(DownloadHttpException(503), 0))
+         assertTrue(shouldRetryAndroidDownload(DownloadHttpException(429), 0))
+         assertFalse(shouldRetryAndroidDownload(DownloadHttpException(403), 0))
++        assertFalse(shouldRetryAndroidDownload(DownloadIdentityException("mismatched file"), 0))
+         assertFalse(shouldRetryAndroidDownload(IOException("connection lost"), 4))
+     }
+ }
 diff --git a/composeApp/src/androidHostTest/kotlin/com/nuvio/app/features/downloads/AndroidMultiRangeTransferTest.kt b/composeApp/src/androidHostTest/kotlin/com/nuvio/app/features/downloads/AndroidMultiRangeTransferTest.kt
 new file mode 100644
-index 0000000..4bcd166
+index 0000000..2fe0adb
 --- /dev/null
 +++ b/composeApp/src/androidHostTest/kotlin/com/nuvio/app/features/downloads/AndroidMultiRangeTransferTest.kt
 @@ -0,0 +1,218 @@
@@ -71,7 +83,7 @@ index 0000000..4bcd166
 +            assertEquals(bytes.size.toLong(), output.length())
 +            assertEquals(4, server.requestCount) // 1-byte probe + 3 independent 8-MiB ranges
 +            repeat(4) {
-+                val request = server.takeRequest(5, TimeUnit.SECONDS)
++                val request = requireNotNull(server.takeRequest(5, TimeUnit.SECONDS))
 +                assertEquals("identity", request.getHeader("Accept-Encoding"))
 +                assertEquals("Bearer test", request.getHeader("Authorization"))
 +                if (request.getHeader("Range") != "bytes=0-0") {
@@ -223,7 +235,7 @@ index 0000000..4bcd166
 +    }
 +}
 diff --git a/composeApp/src/androidMain/kotlin/com/nuvio/app/features/downloads/AndroidDownloadScheduler.kt b/composeApp/src/androidMain/kotlin/com/nuvio/app/features/downloads/AndroidDownloadScheduler.kt
-index b4a6634..8932b2b 100644
+index b4a6634..5ed63c6 100644
 --- a/composeApp/src/androidMain/kotlin/com/nuvio/app/features/downloads/AndroidDownloadScheduler.kt
 +++ b/composeApp/src/androidMain/kotlin/com/nuvio/app/features/downloads/AndroidDownloadScheduler.kt
 @@ -124,6 +124,7 @@ internal class AndroidDownloadScheduler(val context: Context) {
@@ -252,6 +264,14 @@ index b4a6634..8932b2b 100644
              false
          } catch (cancelled: CancellationException) {
              throw cancelled
+@@ -238,6 +243,7 @@ internal class AndroidDownloadScheduler(val context: Context) {
+ internal fun shouldRetryAndroidDownload(error: Exception, retries: Int): Boolean =
+     retries < 4 && when (error) {
+         is DownloadHttpException -> error.statusCode == 408 || error.statusCode == 429 || error.statusCode in 500..599
++        is DownloadIdentityException -> false
+         is IOException -> true
+         else -> false
+     }
 diff --git a/composeApp/src/androidMain/kotlin/com/nuvio/app/features/downloads/AndroidDownloadTransfer.kt b/composeApp/src/androidMain/kotlin/com/nuvio/app/features/downloads/AndroidDownloadTransfer.kt
 index 9c2dd19..4dcacde 100644
 --- a/composeApp/src/androidMain/kotlin/com/nuvio/app/features/downloads/AndroidDownloadTransfer.kt
@@ -279,10 +299,10 @@ index 9c2dd19..4dcacde 100644
  
 diff --git a/composeApp/src/androidMain/kotlin/com/nuvio/app/features/downloads/AndroidMultiRangeTransfer.kt b/composeApp/src/androidMain/kotlin/com/nuvio/app/features/downloads/AndroidMultiRangeTransfer.kt
 new file mode 100644
-index 0000000..c1b285f
+index 0000000..a9ada5f
 --- /dev/null
 +++ b/composeApp/src/androidMain/kotlin/com/nuvio/app/features/downloads/AndroidMultiRangeTransfer.kt
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,291 @@
 +package com.nuvio.app.features.downloads
 +
 +import android.util.AtomicFile
@@ -308,6 +328,9 @@ index 0000000..c1b285f
 +import kotlinx.serialization.json.Json
 +import okhttp3.OkHttpClient
 +import okhttp3.Request
++
++/** Identity mismatches are not transient HTTP failures and must not be retried. */
++internal class DownloadIdentityException(message: String) : IOException(message)
 +
 +private const val RANGE_CHUNK_BYTES = 8L * 1024 * 1024
 +private const val MIN_PARALLEL_BYTES = 16L * 1024 * 1024
@@ -394,7 +417,7 @@ index 0000000..c1b285f
 +            }
 +            if (response.code != 206) {
 +                if (response.code in 200..299) {
-+                    if (resuming) throw IOException("Cannot resume: byte ranges are unavailable")
++                    if (resuming) throw DownloadIdentityException("Cannot resume: byte ranges are unavailable")
 +                    return@withContext null
 +                }
 +                throw DownloadHttpException(response.code)
@@ -403,7 +426,7 @@ index 0000000..c1b285f
 +            val strongEtag = response.header("ETag")?.trim()?.takeIf { it.startsWith("\"") && it.endsWith("\"") }
 +            if (range == null || range.first != 0L || range.second != 0L ||
 +                range.third < MIN_PARALLEL_BYTES || strongEtag == null) {
-+                if (resuming) throw IOException("Cannot safely resume: source identity or byte ranges changed")
++                if (resuming) throw DownloadIdentityException("Cannot safely resume: source identity or byte ranges changed")
 +                return@withContext null
 +            }
 +            if (response.body?.contentLength()?.takeIf { it >= 0L }?.let { it != 1L } == true) {
@@ -423,7 +446,7 @@ index 0000000..c1b285f
 +    val (total, etag) = identity
 +    val numChunksLong = (total - 1L) / RANGE_CHUNK_BYTES + 1L
 +    if (numChunksLong > MAX_CHUNKS) {
-+        if (resuming) throw IOException("Cannot resume: too many range chunks")
++        if (resuming) throw DownloadIdentityException("Cannot resume: too many range chunks")
 +        return@withContext null
 +    }
 +    val numChunks = numChunksLong.toInt()
@@ -436,14 +459,14 @@ index 0000000..c1b285f
 +                AtomicFile(checkpointFile).readFully().decodeToString()
 +            )
 +        } catch (_: Exception) {
-+            throw IOException("Cannot resume: range checkpoint is damaged")
++            throw DownloadIdentityException("Cannot resume: range checkpoint is damaged")
 +        }
 +    } else null
 +    if (recorded != null &&
 +        (recorded.format != 1 || recorded.total != total || recorded.etag != etag ||
 +            recorded.sourceHash != sourceHash || recorded.chunkSize != RANGE_CHUNK_BYTES ||
 +            recorded.completed.any { it < 0 || it >= numChunks } || partial.length() != total)) {
-+        throw IOException("Cannot resume: the saved source does not match; partial data was preserved")
++        throw DownloadIdentityException("Cannot resume: the saved source does not match; partial data was preserved")
 +    }
 +
 +    val completed = recorded?.completed?.toMutableSet() ?: mutableSetOf()
@@ -497,12 +520,12 @@ index 0000000..c1b285f
 +                        chunkCall.execute().use { response ->
 +                            if (response.code != 206) {
 +                                if (response.code !in 200..299) throw DownloadHttpException(response.code)
-+                                throw IOException("Server ignored the verified byte range")
++                                throw DownloadIdentityException("Server ignored the verified byte range")
 +                            }
 +                            val got = parseStrictContentRange(response.header("Content-Range"))
 +                            if (got != Triple(start, end, total) ||
 +                                response.header("ETag")?.let { it != etag } == true) {
-+                                throw IOException("Source changed or returned the wrong byte range")
++                                throw DownloadIdentityException("Source changed or returned the wrong byte range")
 +                            }
 +                            val expected = end - start + 1L
 +                            val body = response.body ?: throw IOException("Empty range response")
