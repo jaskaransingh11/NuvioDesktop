@@ -46,6 +46,8 @@ internal class Aria2DesktopDownloadEngine private constructor(
         onPaused: () -> Unit,
     ): DownloadsTaskHandle {
         val job = SupervisorJob()
+        val startNanos = System.nanoTime()
+        DownloadAudit.record(DownloadAudit.Event.START, request.item.id)
         val scope = CoroutineScope(job + Dispatchers.IO)
 
         scope.launch {
@@ -53,6 +55,7 @@ internal class Aria2DesktopDownloadEngine private constructor(
             val destination = File(directory, request.destinationFileName)
             val partial = File(directory, "${request.destinationFileName}.part")
 
+            var lastProgressAuditNanos = 0L
             try {
                 val gid = sidecar.startOrResume(
                     key = request.destinationFileName,
@@ -61,6 +64,9 @@ internal class Aria2DesktopDownloadEngine private constructor(
                     directory = directory,
                     outputFileName = partial.name,
                     request = request,
+                    onResumeValidated = {
+                        DownloadAudit.record(DownloadAudit.Event.RESTART_VALIDATED, request.item.id)
+                    },
                 )
 
                 while (isActive) {
@@ -68,6 +74,11 @@ internal class Aria2DesktopDownloadEngine private constructor(
                     val downloaded = status.completedLength.coerceAtLeast(0L)
                     val total = status.totalLength?.takeIf { it > 0L }
                     onProgress(downloaded, total)
+                    val nowNanos = System.nanoTime()
+                    if (nowNanos - lastProgressAuditNanos >= 10_000_000_000L) {
+                        DownloadAudit.record(DownloadAudit.Event.PROGRESS, request.item.id, bytes = downloaded)
+                        lastProgressAuditNanos = nowNanos
+                    }
 
                     when (status.status) {
                         "complete" -> {
@@ -80,6 +91,14 @@ internal class Aria2DesktopDownloadEngine private constructor(
                             File(partial.absolutePath + ".aria2").delete()
                             sidecar.clearVerifiedIdentity(partial)
                             val finalSize = destination.length()
+                            check(finalSize > 0L && (total == null || total == finalSize)) {
+                                "Completed transfer byte count did not match; final file retained for review"
+                            }
+                            DownloadAudit.record(
+                                DownloadAudit.Event.COMPLETE, request.item.id,
+                                bytes = finalSize,
+                                elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L,
+                            )
                             onSuccess(destination.toURI().toString(), total ?: finalSize)
                             return@launch
                         }
@@ -89,11 +108,14 @@ internal class Aria2DesktopDownloadEngine private constructor(
                             val detail = status.errorMessage?.takeIf { it.isNotBlank() }
                                 ?: status.errorCode?.let { "aria2 error code $it" }
                                 ?: "aria2 download failed"
-                            onFailure(detail)
+                            DownloadAudit.record(DownloadAudit.Event.ERROR, request.item.id,
+                                bytes = downloaded, errorKind = DownloadAudit.classify(detail))
+                            onFailure(DownloadAudit.safeErrorMessage(detail))
                             return@launch
                         }
 
                         "paused" -> {
+                            DownloadAudit.record(DownloadAudit.Event.PAUSE, request.item.id, bytes = downloaded)
                             onPaused()
                             return@launch
                         }
@@ -105,21 +127,34 @@ internal class Aria2DesktopDownloadEngine private constructor(
                 withContext(NonCancellable) {
                     runCatching { sidecar.pause(request.destinationFileName) }
                 }
+                DownloadAudit.record(DownloadAudit.Event.PAUSE, request.item.id)
                 onPaused()
                 throw error
             } catch (error: Throwable) {
-                onFailure(error.message ?: "aria2 download failed")
+                val reason = error.message.orEmpty()
+                DownloadAudit.record(
+                    if (DownloadAudit.classify(reason) == "SOURCE_IDENTITY") {
+                        DownloadAudit.Event.RESUME_BLOCKED
+                    } else {
+                        DownloadAudit.Event.ERROR
+                    },
+                    request.item.id,
+                    errorKind = DownloadAudit.classify(reason),
+                )
+                onFailure(DownloadAudit.safeErrorMessage(reason))
             }
         }
 
         return Aria2DownloadsTaskHandle(job)
     }
 
-    fun discard(destinationFileName: String) {
+    fun discard(destinationFileName: String): Boolean =
         runBlocking(Dispatchers.IO) {
-            runCatching { sidecar.remove(destinationFileName) }
+            runCatching {
+                sidecar.remove(destinationFileName)
+                true
+            }.getOrDefault(false)
         }
-    }
 
     companion object {
         fun createOrNull(downloadsDirectory: () -> File): Aria2DesktopDownloadEngine? {
@@ -174,6 +209,7 @@ private class Aria2Sidecar private constructor(
         directory: File,
         outputFileName: String,
         request: DownloadPlatformRequest,
+        onResumeValidated: () -> Unit,
     ): String {
         val partial = File(directory, outputFileName)
         val existing = gidsByKey[key]
@@ -185,6 +221,7 @@ private class Aria2Sidecar private constructor(
                 // Validate the old .part and new HTTP representation BEFORE
                 // replacing a signed link. A matching byte count is not identity.
                 val proof = verifiedSource.inspectAndBind(request, partial)
+                if (proof.resumeExistingPartial) onResumeValidated()
                 changeUri(existing, previousUrl, url)
                 if (proof.ifRangeEtag != null) {
                     setSafeResumeHeaders(existing, headers, proof.ifRangeEtag)
@@ -198,6 +235,7 @@ private class Aria2Sidecar private constructor(
         // A restarted sidecar must prove persisted source and byte identity,
         // including the old aria2 bitfield. Legacy unverified parts remain safe.
         val resume = verifiedSource.inspectAndBind(request, partial)
+        if (resume.resumeExistingPartial) onResumeValidated()
 
         val headerValues = headers
             .filter { (name, value) -> name.isNotBlank() && value.isNotBlank() }
@@ -216,7 +254,7 @@ private class Aria2Sidecar private constructor(
             put("connect-timeout", JsonPrimitive("15"))
             put("timeout", JsonPrimitive("60"))
             put("auto-file-renaming", JsonPrimitive("false"))
-            put("allow-overwrite", JsonPrimitive("true"))
+            put("allow-overwrite", JsonPrimitive("false"))
             put("file-allocation", JsonPrimitive("none"))
             if (resume.ifRangeEtag != null) {
                 put("header", JsonArray(headerValues + JsonPrimitive("If-Range: " + resume.ifRangeEtag)))
@@ -279,11 +317,24 @@ private class Aria2Sidecar private constructor(
     }
 
     suspend fun remove(key: String) {
-        val gid = gidsByKey.remove(key) ?: return
-        sourceByKey.remove(key)
-        runCatching {
+        val gid = gidsByKey[key] ?: return
+        val status = tellStatus(gid).status
+        if (status !in setOf("error", "removed", "complete")) {
+            // Do not delete a .part until aria2 ACKs that it stopped writing.
             rpc("aria2.forceRemove", JsonArray(listOf(token(), JsonPrimitive(gid))))
+            var stopped = false
+            repeat(30) {
+                if (!stopped) {
+                    stopped = tellStatus(gid).status in setOf("removed", "error", "complete")
+                    if (!stopped) delay(100L)
+                }
+            }
+            check(stopped) { "aria2 removal was not confirmed; partial retained" }
         }
+        gidsByKey.remove(key, gid)
+        sourceByKey.remove(key)
+        // A finished result is already quiescent; removal from history is not
+        // needed for the safety guarantee. Never retry non-idempotent forceRemove.
         runCatching {
             rpc("aria2.removeDownloadResult", JsonArray(listOf(token(), JsonPrimitive(gid))))
         }

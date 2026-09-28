@@ -69,6 +69,11 @@ internal class VerifiedResumeSource {
         val control = File(part.absolutePath + ".aria2")
         val identityFile = File(part.absolutePath + ".nuvio-identity.json")
         val hasBytes = part.exists() && part.length() > 0L
+        // An abandoned aria2 bitfield must never authorize skipping bytes
+        // when its corresponding media file is missing or empty.
+        check(hasBytes || !control.exists()) {
+            "Orphan aria2 control cannot be verified; partial retained"
+        }
         val urlDigest = hash(request.sourceUrl + "\n" + request.sourceHeaders.toSortedMap().toString())
         val selectedTorrent = torrentSelectionIdentity(request.item)
         val proof = inspectRange(request.sourceUrl, request.sourceHeaders)

@@ -47,11 +47,17 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     actual fun removePartialFile(destinationFileName: String): Boolean {
-        (desktopDownloadEngine as? Aria2DesktopDownloadEngine)?.discard(destinationFileName)
+        val sidecarStopped =
+            (desktopDownloadEngine as? Aria2DesktopDownloadEngine)?.discard(destinationFileName) ?: true
+        if (!sidecarStopped) return false
         val tempFile = File(downloadsDir, "$destinationFileName.part")
         val controlFile = File(downloadsDir, "$destinationFileName.part.aria2")
         val tempRemoved = !tempFile.exists() || runCatching { tempFile.delete() }.getOrDefault(false)
         val controlRemoved = !controlFile.exists() || runCatching { controlFile.delete() }.getOrDefault(false)
+        if (tempRemoved && controlRemoved) {
+            File(downloadsDir, "$destinationFileName.part.nuvio-identity.json").delete()
+            DownloadAudit.record(DownloadAudit.Event.CANCEL, destinationFileName)
+        }
         return tempRemoved && controlRemoved
     }
 
