@@ -76,9 +76,52 @@ jobs:
           $linkerLibrary = Join-Path $root 'build\native\x64\WebView2Loader.dll.lib'
           if (-not (Test-Path -LiteralPath $linkerLibrary)) { throw 'WebView2 import library unavailable' }
           "WEBVIEW2_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Prepare checksummed aria2 Windows runtime and license
+        shell: pwsh
+        run: .\.github\scripts\prepare-aria2-windows.ps1
       - name: Build standalone MSI with validated client config
         shell: pwsh
         run: .\gradlew.bat :composeApp:packageReleaseMsi "-Pnuvio.desktop.versionName=1.1.27" "-Pnuvio.desktop.versionCode=27" "-Pnuvio.webview2.dir=$env:WEBVIEW2_ROOT" "-Pcompose.desktop.packaging.checkJdkVendor=false" --no-configuration-cache --no-daemon --max-workers=2
+      - name: Verify packaged aria2 executable and license by MSI extraction
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem composeApp/build/compose/release-msis/*.msi | Select-Object -First 1
+          if (-not $msi) { throw 'Expected Nuvio canary MSI missing' }
+          $winInstaller = New-Object -ComObject WindowsInstaller.Installer
+          $db = $winInstaller.OpenDatabase($msi.FullName, 0)
+          function Read-MsiProperty([string]$name) {
+            $view = $db.OpenView("SELECT Value FROM Property WHERE Property='$name'")
+            try {
+              $view.Execute()
+              $record = $view.Fetch()
+              if (-not $record) { throw "MSI missing expected property: $name" }
+              return $record.StringData(1)
+            } finally {
+              $view.Close()
+            }
+          }
+          if ((Read-MsiProperty 'ProductVersion') -ne '1.1.27') { throw 'MSI is not version 1.1.27' }
+          if ((Read-MsiProperty 'UpgradeCode') -ne '{395990EE-9B8A-3548-922C-E7A23A495B8D}') {
+            throw 'MSI UpgradeCode differs from the installed 1.1.26 product'
+          }
+          if ((Read-MsiProperty 'ProductCode') -eq '{47543BAA-CD50-3953-8556-D4EF6DE8508B}') {
+            throw 'Canary MSI ProductCode collides with installed 1.1.26'
+          }
+          Write-Output 'Verified distinct 1.1.27 ProductCode and preserved upgrade lineage.'
+          $target = Join-Path $env:RUNNER_TEMP 'jj-msi-aria2-acceptance'
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          $msiCommand = @('/a', ('"' + $msi.FullName + '"'), '/qn', ('TARGETDIR="' + $target + '"'))
+          $install = Start-Process msiexec.exe -Wait -PassThru -ArgumentList $msiCommand
+          if ($install.ExitCode -ne 0) { throw "MSI administrative extraction failed: $($install.ExitCode)" }
+          $packed = @(Get-ChildItem $target -File -Recurse -Filter aria2c.exe)
+          if ($packed.Count -ne 1) { throw "Expected exactly one bundled aria2 executable, found $($packed.Count)" }
+          $from = 'composeApp/packageResources/windows/tools/aria2c.exe'
+          if ((Get-FileHash $packed[0].FullName -Algorithm SHA256).Hash -ne (Get-FileHash $from -Algorithm SHA256).Hash) {
+            throw 'Packed aria2 binary hash differs from verified upstream executable'
+          }
+          $license = @(Get-ChildItem $target -File -Recurse -Filter COPYING | Where-Object {$_.FullName -match 'aria2'})
+          if ($license.Count -lt 1) { throw 'Aria2 GPL notice missing from MSI' }
+          Write-Output 'Verified signed-off aria2 binary and required copyright license notice in extracted MSI.'
       - name: Upload standalone MSI only
         uses: actions/upload-artifact@v6
         with:

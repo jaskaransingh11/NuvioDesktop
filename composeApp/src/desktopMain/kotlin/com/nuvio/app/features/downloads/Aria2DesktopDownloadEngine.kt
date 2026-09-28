@@ -475,6 +475,10 @@ private fun JsonObject.string(name: String): String? =
 
 private fun locateAria2Executable(): File? {
     val candidates = buildList {
+        System.getProperty("compose.application.resources.dir")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { File(it, "tools/aria2c.exe") }
+            ?.let(::add)
         System.getenv("NUVIO_ARIA2_PATH")
             ?.trim()
             ?.takeIf { it.isNotBlank() }
