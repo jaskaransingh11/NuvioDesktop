@@ -6,6 +6,7 @@ internal data class DownloadPlatformRequest(
     val sourceUrl: String get() = item.sourceUrl
     val sourceHeaders: Map<String, String> get() = item.sourceHeaders
     val destinationFileName: String get() = item.fileName
+    val stableContentIdentity: String? get() = item.stableDownloadContentIdentity()
 }
 
 internal interface DownloadsTaskHandle {

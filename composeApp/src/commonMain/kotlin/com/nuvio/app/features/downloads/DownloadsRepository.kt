@@ -5,6 +5,7 @@ import com.nuvio.app.features.streams.StreamItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -160,6 +161,7 @@ object DownloadsRepository {
             episodeTitle = episodeTitle,
             fallbackTitle = stream.streamLabel,
             sourceUrl = sourceUrl,
+            suggestedFilename = stream.behaviorHints.filename ?: stream.clientResolve?.filename,
             downloadId = downloadId,
         )
 
@@ -191,7 +193,7 @@ object DownloadsRepository {
             fileName = fileName,
             status = DownloadStatus.Downloading,
             downloadedBytes = 0L,
-            totalBytes = null,
+            totalBytes = stream.behaviorHints.videoSize?.takeIf { it > 0L },
             errorMessage = null,
             createdAtEpochMs = now,
             updatedAtEpochMs = now,
@@ -349,36 +351,39 @@ object DownloadsRepository {
             onFailure = onFailure@ { message ->
                 activeHandles.remove(item.id)
                 val current = _uiState.value.items.firstOrNull { it.id == item.id }
-                if (current?.status == DownloadStatus.Downloading && attempt < MaxDownloadAttempts) {
-                    startDownload(current, attempt + 1, sourceRefreshAttempted)
+                if (current?.status != DownloadStatus.Downloading) return@onFailure
+
+                val failureAction = classifyDownloadFailure(message)
+
+                if (
+                    failureAction == DownloadFailureAction.RefreshSource &&
+                    !sourceRefreshAttempted &&
+                    current.sourceResolve != null
+                ) {
+                    refreshAndRestartDownload(current, message)
                     return@onFailure
                 }
 
                 if (
-                    current?.status == DownloadStatus.Downloading &&
+                    failureAction == DownloadFailureAction.RetrySameSource &&
+                    attempt < MaxDownloadAttempts
+                ) {
+                    downloadScope.launch {
+                        delay(downloadRetryDelayMs(attempt))
+                        val latest = _uiState.value.items.firstOrNull { it.id == item.id }
+                        if (latest?.status == DownloadStatus.Downloading) {
+                            startDownload(latest, attempt + 1, sourceRefreshAttempted)
+                        }
+                    }
+                    return@onFailure
+                }
+
+                if (
+                    failureAction == DownloadFailureAction.RetrySameSource &&
                     !sourceRefreshAttempted &&
                     current.sourceResolve != null
                 ) {
-                    downloadScope.launch {
-                        val latest = _uiState.value.items.firstOrNull { it.id == item.id }
-                        if (latest?.status != DownloadStatus.Downloading) return@launch
-
-                        val refreshed = runCatching { refreshDownloadSource(latest) }.getOrNull()
-                        val refreshedUrl = refreshed?.url?.trim()?.takeIf { it.isNotBlank() }
-                        if (refreshedUrl != null && refreshedUrl != latest.sourceUrl) {
-                            val refreshedItem = latest.copy(
-                                sourceUrl = refreshedUrl,
-                                totalBytes = refreshed.videoSize?.takeIf { it > 0L } ?: latest.totalBytes,
-                                errorMessage = null,
-                                updatedAtEpochMs = DownloadsClock.nowEpochMs(),
-                            )
-                            replaceItem(refreshedItem)
-                            persist()
-                            startDownload(refreshedItem, attempt = 1, sourceRefreshAttempted = true)
-                        } else {
-                            markDownloadFailed(item.id, message)
-                        }
-                    }
+                    refreshAndRestartDownload(current, message)
                     return@onFailure
                 }
 
@@ -397,6 +402,28 @@ object DownloadsRepository {
     }
 
 
+    private fun refreshAndRestartDownload(current: DownloadItem, originalFailure: String) {
+        downloadScope.launch {
+            val latest = _uiState.value.items.firstOrNull { it.id == current.id }
+            if (latest?.status != DownloadStatus.Downloading) return@launch
+
+            val refreshed = runCatching { refreshDownloadSource(latest) }.getOrNull()
+            val refreshedUrl = refreshed?.url?.trim()?.takeIf { it.isNotBlank() }
+            if (refreshedUrl != null) {
+                val refreshedItem = latest.copy(
+                    sourceUrl = refreshedUrl,
+                    totalBytes = refreshed.videoSize?.takeIf { it > 0L } ?: latest.totalBytes,
+                    errorMessage = null,
+                    updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+                )
+                replaceItem(refreshedItem)
+                persist()
+                startDownload(refreshedItem, attempt = 1, sourceRefreshAttempted = true)
+            } else {
+                markDownloadFailed(current.id, originalFailure)
+            }
+        }
+    }
     private fun markDownloadFailed(downloadId: String, message: String) {
         mutateItem(downloadId) { current ->
             if (current.status != DownloadStatus.Downloading) {
@@ -558,6 +585,7 @@ private fun buildFileName(
     episodeTitle: String?,
     fallbackTitle: String,
     sourceUrl: String,
+    suggestedFilename: String?,
     downloadId: String,
 ): String {
     val baseTitle = if (seasonNumber != null && episodeNumber != null) {
@@ -576,7 +604,7 @@ private fun buildFileName(
         title.ifBlank { fallbackTitle }
     }
 
-    val extension = sourceUrl.fileExtensionFromUrl()
+    val extension = downloadExtensionFromMetadata(suggestedFilename, sourceUrl)
     return buildString {
         append(baseTitle.sanitizeFileName().ifBlank { "download" }.take(92))
         append('_')
@@ -586,6 +614,20 @@ private fun buildFileName(
     }
 }
 
+/**
+ * Signed debrid URLs can be opaque while the selected media is Matroska.
+ * Prefer resolved filename metadata; only accept safe media extensions
+ * from untrusted addon hints before using the legacy URL fallback.
+ */
+internal fun downloadExtensionFromMetadata(suggestedFilename: String?, sourceUrl: String): String {
+    val hintExtension = suggestedFilename
+        ?.substringAfterLast('/')
+        ?.substringAfterLast('\\')
+        ?.substringAfterLast('.', missingDelimiterValue = "")
+        ?.lowercase()
+        ?.takeIf { it in setOf("mkv", "mp4", "m4v", "webm", "mov", "avi", "ts", "m2ts", "mpeg", "mpg", "flv", "wmv", "wav", "mp3") }
+    return hintExtension ?: sourceUrl.fileExtensionFromUrl()
+}
 private fun String.sanitizeFileName(): String =
     trim().replace(Regex("[^A-Za-z0-9._ -]"), "_")
 

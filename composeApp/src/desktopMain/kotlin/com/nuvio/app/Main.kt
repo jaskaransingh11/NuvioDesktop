@@ -25,6 +25,8 @@ import com.nuvio.app.features.discordrpc.DiscordPresenceManager
 import com.nuvio.app.features.p2p.P2pStreamingEngine
 import com.nuvio.app.features.plugins.configureDesktopQuickJsLibrary
 import com.nuvio.app.features.player.PlatformPlayerSurface
+import com.nuvio.app.features.player.PlayerEngineController
+import com.nuvio.app.features.player.PlayerPlaybackSnapshot
 import com.nuvio.app.features.player.desktop.DesktopAppFullscreenController
 import com.nuvio.app.features.player.desktop.DesktopHostOs
 import com.nuvio.app.features.player.desktop.DesktopWindowGeometry
@@ -41,6 +43,7 @@ import com.nuvio.app.features.settings.AppIconRepository
 import com.nuvio.app.features.settings.applyDesktopRendererPreference
 import com.nuvio.app.features.settings.transparentPreviewResource
 import java.awt.Desktop
+import java.io.File
 import javax.imageio.ImageIO
 import java.awt.Color as AwtColor
 import javax.swing.JComponent
@@ -76,6 +79,16 @@ fun main(args: Array<String>) {
                 ?: System.getenv("NUVIO_DESKTOP_SMOKE_PLAYER_URL")
             )
             ?.takeIf { it.isNotBlank() }
+        val smokeReportPath = (
+            System.getProperty("nuvio.desktop.smokeReportPath")
+                ?: System.getenv("NUVIO_DESKTOP_SMOKE_REPORT_PATH")
+            )
+            ?.takeIf { it.isNotBlank() }
+        val smokeAutoSeek = (
+            System.getProperty("nuvio.desktop.smokeAutoSeek")
+                ?: System.getenv("NUVIO_DESKTOP_SMOKE_AUTO_SEEK")
+            )
+            ?.equals("true", ignoreCase = true) == true
         val wasFullscreenOnLastExit = remember { DesktopWindowModeStorage.loadWasFullscreen() }
         val wasMaximizedOnLastExit = remember { DesktopWindowModeStorage.loadWasMaximized() }
         val savedGeometry = remember { DesktopWindowModeStorage.loadWindowedGeometry() }
@@ -217,16 +230,94 @@ fun main(args: Array<String>) {
             } else {
                 // The player surface reads LocalNuvioPlatformDensity, which only
                 // NuvioTheme provides — the bare smoke harness must supply it too.
+                val smokeRecorder = remember(smokeReportPath, smokeAutoSeek) {
+                    smokeReportPath?.let { path ->
+                        DesktopPlayerSmokeRecorder(
+                            reportFile = File(path),
+                            autoSeek = smokeAutoSeek,
+                        )
+                    }
+                }
                 NuvioTheme {
                     PlatformPlayerSurface(
                         sourceUrl = smokePlayerUrl,
                         modifier = Modifier.fillMaxSize(),
-                        onControllerReady = {},
-                        onSnapshot = {},
-                        onError = {},
+                        onControllerReady = { controller -> smokeRecorder?.onControllerReady(controller) },
+                        onSnapshot = { snapshot -> smokeRecorder?.onSnapshot(snapshot) },
+                        onError = { message -> smokeRecorder?.onError(message) },
                     )
                 }
             }
+        }
+    }
+}
+
+private class DesktopPlayerSmokeRecorder(
+    private val reportFile: File,
+    private val autoSeek: Boolean,
+) {
+    private var controller: PlayerEngineController? = null
+    private var stage: Int = 0
+
+    init {
+        runCatching {
+            reportFile.parentFile?.mkdirs()
+            reportFile.writeText("SMOKE_START epochMs=" + System.currentTimeMillis() + "\n", Charsets.UTF_8)
+        }
+    }
+
+    fun onControllerReady(value: PlayerEngineController) {
+        controller = value
+        append("CONTROLLER_READY")
+    }
+
+    fun onSnapshot(snapshot: PlayerPlaybackSnapshot) {
+        append(
+            "SNAPSHOT loading=" + snapshot.isLoading +
+                " playing=" + snapshot.isPlaying +
+                " ended=" + snapshot.isEnded +
+                " positionMs=" + snapshot.positionMs +
+                " durationMs=" + snapshot.durationMs +
+                " bufferedMs=" + snapshot.bufferedPositionMs,
+        )
+        if (!autoSeek || snapshot.isLoading || snapshot.durationMs < 60_000L) return
+
+        when (stage) {
+            0 -> if (snapshot.positionMs >= 1_000L) {
+                val target = snapshot.durationMs / 2L
+                stage = 1
+                append("ACTION seek=middle targetMs=" + target)
+                controller?.seekTo(target)
+            }
+            1 -> if (snapshot.positionMs >= snapshot.durationMs * 4L / 10L) {
+                val target = snapshot.durationMs * 9L / 10L
+                stage = 2
+                append("ACTION seek=near-end targetMs=" + target)
+                controller?.seekTo(target)
+            }
+            2 -> if (snapshot.positionMs >= snapshot.durationMs * 8L / 10L) {
+                stage = 3
+                append("RESULT PASS playback-and-seek")
+            }
+        }
+    }
+
+    fun onError(message: String?) {
+        append(
+            "ERROR " + message.orEmpty()
+                .replace('\r', ' ')
+                .replace('\n', ' ')
+                .replace(Regex("""(?i)https?://\S+"""), "[url]")
+                .take(240),
+        )
+    }
+
+    private fun append(line: String) {
+        runCatching {
+            reportFile.appendText(
+                System.currentTimeMillis().toString() + " " + line + "\n",
+                Charsets.UTF_8,
+            )
         }
     }
 }

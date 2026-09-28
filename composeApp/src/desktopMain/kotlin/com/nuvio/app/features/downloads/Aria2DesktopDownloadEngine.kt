@@ -29,6 +29,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
+import java.security.MessageDigest
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -52,6 +53,12 @@ internal class Aria2DesktopDownloadEngine private constructor(
             val directory = downloadsDirectory()
             val destination = File(directory, request.destinationFileName)
             val partial = File(directory, "${request.destinationFileName}.part")
+            DesktopDownloadDiagnostics.log(
+                event = "start",
+                destinationFileName = request.destinationFileName,
+                sourceUrl = request.sourceUrl,
+                detail = "partialBytes=${partial.takeIf { it.exists() }?.length() ?: 0L};identity=${request.stableContentIdentity != null}",
+            )
 
             try {
                 val gid = sidecar.startOrResume(
@@ -60,6 +67,7 @@ internal class Aria2DesktopDownloadEngine private constructor(
                     headers = request.sourceHeaders,
                     directory = directory,
                     outputFileName = partial.name,
+                    stableContentIdentity = request.stableContentIdentity,
                 )
 
                 while (isActive) {
@@ -70,6 +78,7 @@ internal class Aria2DesktopDownloadEngine private constructor(
 
                     when (status.status) {
                         "complete" -> {
+                            DesktopDownloadDiagnostics.log("complete", request.destinationFileName, request.sourceUrl, "bytes=${status.completedLength}")
                             sidecar.forget(request.destinationFileName, gid)
                             if (destination.exists()) destination.delete()
                             if (!partial.renameTo(destination)) {
@@ -77,12 +86,14 @@ internal class Aria2DesktopDownloadEngine private constructor(
                                 partial.delete()
                             }
                             File(partial.absolutePath + ".aria2").delete()
+                            File(partial.absolutePath + ".identity").delete()
                             val finalSize = destination.length()
                             onSuccess(destination.toURI().toString(), total ?: finalSize)
                             return@launch
                         }
 
                         "error", "removed" -> {
+                            DesktopDownloadDiagnostics.log("error", request.destinationFileName, request.sourceUrl, "ariaCode=${status.errorCode.orEmpty()}")
                             sidecar.forget(request.destinationFileName, gid)
                             val detail = status.errorMessage?.takeIf { it.isNotBlank() }
                                 ?: status.errorCode?.let { "aria2 error code $it" }
@@ -92,6 +103,7 @@ internal class Aria2DesktopDownloadEngine private constructor(
                         }
 
                         "paused" -> {
+                            DesktopDownloadDiagnostics.log("paused", request.destinationFileName, request.sourceUrl, "bytes=${status.completedLength}")
                             onPaused()
                             return@launch
                         }
@@ -163,6 +175,7 @@ private class Aria2Sidecar private constructor(
     private val requestIds = AtomicLong(0L)
     private val gidsByKey = ConcurrentHashMap<String, String>()
     private val sourceByKey = ConcurrentHashMap<String, String>()
+    private val identityByKey = ConcurrentHashMap<String, String>()
 
     suspend fun startOrResume(
         key: String,
@@ -170,32 +183,68 @@ private class Aria2Sidecar private constructor(
         headers: Map<String, String>,
         directory: File,
         outputFileName: String,
+        stableContentIdentity: String?,
     ): String {
         val partial = File(directory, outputFileName)
+        val identityFile = File(partial.absolutePath + ".identity")
         val existing = gidsByKey[key]
         if (existing != null) {
             // A failed RPC must never turn into a second writer for the same .part file.
             val previousUrl = sourceByKey[key]
                 ?: error("Previous aria2 source unavailable; partial retained")
+            val previousIdentity = identityByKey[key]
             if (previousUrl != url) {
-                // Without a verified strong validator, a new signed URL may point at
-                // different content of the same length. Keep every downloaded byte
-                // intact rather than silently mixing files.
-                check(tellStatus(existing).completedLength == 0L &&
-                    (!partial.exists() || partial.length() == 0L)) {
-                    "Cannot refresh a nonempty partial without verified file identity; partial retained"
+                val hasBytes = tellStatus(existing).completedLength > 0L ||
+                    (partial.exists() && partial.length() > 0L)
+                if (hasBytes) {
+                    val persistedIdentity = identityFile.takeIf { it.isFile }
+                        ?.readText(Charsets.UTF_8)
+                        ?.trim()
+                    check(matchesActiveResumeIdentity(stableContentIdentity, previousIdentity, persistedIdentity)) {
+                        "Cannot refresh a nonempty partial without matching persisted file identity; partial retained"
+                    }
                 }
+                DesktopDownloadDiagnostics.log(
+                    event = "source-refresh",
+                    destinationFileName = key,
+                    sourceUrl = url,
+                    detail = "hasBytes=$hasBytes;identityMatched=${stableContentIdentity != null && stableContentIdentity == previousIdentity}",
+                )
                 changeUri(existing, previousUrl, url)
                 sourceByKey[key] = url
+                stableContentIdentity?.let { identityByKey[key] = it }
             }
             rpc("aria2.unpause", JsonArray(listOf(token(), JsonPrimitive(existing))))
             return existing
         }
 
-        // A fresh aria2 sidecar has no trusted source/ETag record for a saved
-        // .part (including a legacy native-HTTP partial). Never reinterpret it.
-        check(!partial.exists() || partial.length() == 0L) {
-            "Cannot resume pre-existing partial without verified file identity; partial retained"
+        val ariaControl = File(partial.absolutePath + ".aria2")
+        val hasPreExistingPartial = partial.exists() && partial.length() > 0L
+        if (hasPreExistingPartial) {
+            DesktopDownloadDiagnostics.log(
+                event = "restart-resume-check",
+                destinationFileName = key,
+                sourceUrl = url,
+                detail = "partialBytes=${partial.length()};control=${ariaControl.exists()};identity=${stableContentIdentity != null}",
+            )
+            val persistedIdentity = identityFile.takeIf { it.isFile }
+                ?.readText(Charsets.UTF_8)
+                ?.trim()
+            check(
+                matchesPersistedResumeIdentity(
+                    stableContentIdentity,
+                    persistedIdentity,
+                    ariaControl.exists() && ariaControl.length() > 0L,
+                )
+            ) {
+                "Cannot resume pre-existing partial without matching persisted identity and aria2 control state; partial retained"
+            }
+        } else {
+            if (stableContentIdentity.isNullOrBlank()) {
+                if (identityFile.exists()) identityFile.delete()
+            } else {
+                identityFile.writeText(stableContentIdentity, Charsets.UTF_8)
+            }
         }
 
         val headerValues = headers
@@ -233,6 +282,7 @@ private class Aria2Sidecar private constructor(
             ?: error("aria2 did not return a download id")
         gidsByKey[key] = gid
         sourceByKey[key] = url
+        stableContentIdentity?.let { identityByKey[key] = it }
         return gid
     }
 
@@ -277,6 +327,7 @@ private class Aria2Sidecar private constructor(
     suspend fun remove(key: String) {
         val gid = gidsByKey.remove(key) ?: return
         sourceByKey.remove(key)
+        identityByKey.remove(key)
         runCatching {
             rpc("aria2.forceRemove", JsonArray(listOf(token(), JsonPrimitive(gid))))
         }
@@ -286,7 +337,10 @@ private class Aria2Sidecar private constructor(
     }
 
     fun forget(key: String, gid: String) {
-        if (gidsByKey.remove(key, gid)) sourceByKey.remove(key)
+        if (gidsByKey.remove(key, gid)) {
+            sourceByKey.remove(key)
+            identityByKey.remove(key)
+        }
     }
 
     private suspend fun changeUri(gid: String, previousUrl: String, updatedUrl: String) {
@@ -393,25 +447,20 @@ private fun JsonObject.string(name: String): String? =
     this[name]?.jsonPrimitive?.contentOrNull
 
 private fun locateAria2Executable(): File? {
-    val candidates = buildList {
-        System.getenv("NUVIO_ARIA2_PATH")
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?.let(::File)
-            ?.let(::add)
+    System.getenv("NUVIO_ARIA2_PATH")
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?.let(::File)
+        ?.takeIf { it.isFile }
+        ?.let { return it }
 
-        System.getenv("LOCALAPPDATA")
-            ?.takeIf { it.isNotBlank() }
-            ?.let { File(it, "Nuvio/tools/aria2c.exe") }
-            ?.let(::add)
+    extractBundledAria2()?.let { return it }
 
-        System.getenv("ChocolateyInstall")
-            ?.takeIf { it.isNotBlank() }
-            ?.let { File(it, "bin/aria2c.exe") }
-            ?.let(::add)
-    }
-
-    candidates.firstOrNull { it.isFile }?.let { return it }
+    System.getenv("ChocolateyInstall")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { File(it, "bin/aria2c.exe") }
+        ?.takeIf { it.isFile }
+        ?.let { return it }
 
     val pathResult = runCatching {
         ProcessBuilder("where.exe", "aria2c.exe")
@@ -429,4 +478,69 @@ private fun locateAria2Executable(): File? {
     return pathResult?.trim()?.takeIf { it.isNotBlank() }?.let(::File)?.takeIf { it.isFile }
 }
 
+private fun extractBundledAria2(): File? {
+    val localAppData = System.getenv("LOCALAPPDATA")?.takeIf { it.isNotBlank() } ?: return null
+    val dir = File(localAppData, "Nuvio/tools").apply { mkdirs() }
+    val target = File(dir, "aria2c.exe")
+    if (target.isFile && target.length() > 1_000_000L && target.sha256Hex() == BUNDLED_ARIA2_SHA256) {
+        extractBundledAria2Notices(dir)
+        return target
+    }
+
+    val stream = Aria2DesktopDownloadEngine::class.java.getResourceAsStream(BUNDLED_ARIA2_RESOURCE)
+        ?: return null
+    val temp = File(dir, "aria2c.exe.tmp")
+    return runCatching {
+        stream.use { input ->
+            temp.outputStream().use { output -> input.copyTo(output) }
+        }
+        check(temp.length() > 1_000_000L && temp.sha256Hex() == BUNDLED_ARIA2_SHA256) {
+            "Bundled aria2 checksum mismatch"
+        }
+        if (target.exists() && !target.delete()) error("Unable to replace bundled aria2")
+        if (!temp.renameTo(target)) {
+            temp.copyTo(target, overwrite = true)
+            temp.delete()
+        }
+        target.setExecutable(true)
+        extractBundledAria2Notices(dir)
+        target
+    }.getOrElse {
+        temp.delete()
+        null
+    }
+}
+
+private fun extractBundledAria2Notices(dir: File) {
+    listOf(
+        BUNDLED_ARIA2_COPYING_RESOURCE to "aria2-COPYING.txt",
+        BUNDLED_ARIA2_OPENSSL_LICENSE_RESOURCE to "aria2-LICENSE.OpenSSL.txt",
+    ).forEach { (resource, fileName) ->
+        val target = File(dir, fileName)
+        if (target.isFile && target.length() > 0L) return@forEach
+        Aria2DesktopDownloadEngine::class.java.getResourceAsStream(resource)?.use { input ->
+            runCatching {
+                target.outputStream().use { output -> input.copyTo(output) }
+            }
+        }
+    }
+}
+
+private fun File.sha256Hex(): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    inputStream().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count <= 0) break
+            digest.update(buffer, 0, count)
+        }
+    }
+    return digest.digest().joinToString("") { byte -> "%02X".format(byte) }
+}
+
+private const val BUNDLED_ARIA2_RESOURCE = "/aria2/windows-amd64/aria2c.exe"
+private const val BUNDLED_ARIA2_COPYING_RESOURCE = "/aria2/windows-amd64/COPYING"
+private const val BUNDLED_ARIA2_OPENSSL_LICENSE_RESOURCE = "/aria2/windows-amd64/LICENSE.OpenSSL"
+private const val BUNDLED_ARIA2_SHA256 = "BE2099C214F63A3CB4954B09A0BECD6E2E34660B886D4C898D260FEBFE9D70C2"
 private const val ARIA2_POLL_INTERVAL_MS = 500L

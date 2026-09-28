@@ -11,8 +11,10 @@ private val downloadsDirectoryProvider: () -> File = {
 }
 
 private val desktopDownloadEngine: DesktopDownloadEngine by lazy {
+    // Never silently downgrade to legacy HTTP: it cannot prove identity of
+    // pre-existing partial bytes across signed-URL rotation.
     Aria2DesktopDownloadEngine.createOrNull(downloadsDirectoryProvider)
-        ?: HttpDesktopDownloadEngine(downloadsDirectoryProvider)
+        ?: UnavailableDesktopDownloadEngine()
 }
 
 internal actual object DownloadsPlatformDownloader {
@@ -47,12 +49,15 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     actual fun removePartialFile(destinationFileName: String): Boolean {
+        DesktopDownloadDiagnostics.log("remove-partial", destinationFileName, null)
         (desktopDownloadEngine as? Aria2DesktopDownloadEngine)?.discard(destinationFileName)
         val tempFile = File(downloadsDir, "$destinationFileName.part")
         val controlFile = File(downloadsDir, "$destinationFileName.part.aria2")
+        val identityFile = File(downloadsDir, "$destinationFileName.part.identity")
         val tempRemoved = !tempFile.exists() || runCatching { tempFile.delete() }.getOrDefault(false)
         val controlRemoved = !controlFile.exists() || runCatching { controlFile.delete() }.getOrDefault(false)
-        return tempRemoved && controlRemoved
+        val identityRemoved = !identityFile.exists() || runCatching { identityFile.delete() }.getOrDefault(false)
+        return tempRemoved && controlRemoved && identityRemoved
     }
 
     actual fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? {
