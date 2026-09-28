@@ -11,8 +11,10 @@ private val downloadsDirectoryProvider: () -> File = {
 }
 
 private val desktopDownloadEngine: DesktopDownloadEngine by lazy {
+    // Never silently downgrade to legacy HTTP: it cannot prove identity of
+    // pre-existing partial bytes across signed-URL rotation.
     Aria2DesktopDownloadEngine.createOrNull(downloadsDirectoryProvider)
-        ?: HttpDesktopDownloadEngine(downloadsDirectoryProvider)
+        ?: UnavailableDesktopDownloadEngine()
 }
 
 internal actual object DownloadsPlatformDownloader {
