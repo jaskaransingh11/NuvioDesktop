@@ -350,36 +350,38 @@ object DownloadsRepository {
             onFailure = onFailure@ { message ->
                 activeHandles.remove(item.id)
                 val current = _uiState.value.items.firstOrNull { it.id == item.id }
-                if (current?.status == DownloadStatus.Downloading && attempt < MaxDownloadAttempts) {
-                    startDownload(current, attempt + 1, sourceRefreshAttempted)
+                if (current?.status != DownloadStatus.Downloading) return@onFailure
+
+                val failureAction = classifyDownloadFailure(message)
+
+                if (
+                    failureAction == DownloadFailureAction.RefreshSource &&
+                    !sourceRefreshAttempted &&
+                    current.sourceResolve != null
+                ) {
+                    refreshAndRestartDownload(current, message)
                     return@onFailure
                 }
 
                 if (
-                    current?.status == DownloadStatus.Downloading &&
+                    failureAction == DownloadFailureAction.RetrySameSource &&
+                    attempt < MaxDownloadAttempts
+                ) {
+                    downloadScope.launch {
+                        delay(downloadRetryDelayMs(attempt))
+                        val latest = _uiState.value.items.firstOrNull { it.id == item.id }
+                        if (latest?.status == DownloadStatus.Downloading) {
+                            startDownload(latest, attempt + 1, sourceRefreshAttempted)
+                        }
+                    }
+                    return@onFailure
+                }
+
+                if (
                     !sourceRefreshAttempted &&
                     current.sourceResolve != null
                 ) {
-                    downloadScope.launch {
-                        val latest = _uiState.value.items.firstOrNull { it.id == item.id }
-                        if (latest?.status != DownloadStatus.Downloading) return@launch
-
-                        val refreshed = runCatching { refreshDownloadSource(latest) }.getOrNull()
-                        val refreshedUrl = refreshed?.url?.trim()?.takeIf { it.isNotBlank() }
-                        if (refreshedUrl != null && refreshedUrl != latest.sourceUrl) {
-                            val refreshedItem = latest.copy(
-                                sourceUrl = refreshedUrl,
-                                totalBytes = refreshed.videoSize?.takeIf { it > 0L } ?: latest.totalBytes,
-                                errorMessage = null,
-                                updatedAtEpochMs = DownloadsClock.nowEpochMs(),
-                            )
-                            replaceItem(refreshedItem)
-                            persist()
-                            startDownload(refreshedItem, attempt = 1, sourceRefreshAttempted = true)
-                        } else {
-                            markDownloadFailed(item.id, message)
-                        }
-                    }
+                    refreshAndRestartDownload(current, message)
                     return@onFailure
                 }
 
@@ -398,6 +400,28 @@ object DownloadsRepository {
     }
 
 
+    private fun refreshAndRestartDownload(current: DownloadItem, originalFailure: String) {
+        downloadScope.launch {
+            val latest = _uiState.value.items.firstOrNull { it.id == current.id }
+            if (latest?.status != DownloadStatus.Downloading) return@launch
+
+            val refreshed = runCatching { refreshDownloadSource(latest) }.getOrNull()
+            val refreshedUrl = refreshed?.url?.trim()?.takeIf { it.isNotBlank() }
+            if (refreshedUrl != null) {
+                val refreshedItem = latest.copy(
+                    sourceUrl = refreshedUrl,
+                    totalBytes = refreshed.videoSize?.takeIf { it > 0L } ?: latest.totalBytes,
+                    errorMessage = null,
+                    updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+                )
+                replaceItem(refreshedItem)
+                persist()
+                startDownload(refreshedItem, attempt = 1, sourceRefreshAttempted = true)
+            } else {
+                markDownloadFailed(current.id, originalFailure)
+            }
+        }
+    }
     private fun markDownloadFailed(downloadId: String, message: String) {
         mutateItem(downloadId) { current ->
             if (current.status != DownloadStatus.Downloading) {

@@ -60,6 +60,7 @@ internal class Aria2DesktopDownloadEngine private constructor(
                     headers = request.sourceHeaders,
                     directory = directory,
                     outputFileName = partial.name,
+                    stableContentIdentity = request.stableContentIdentity,
                 )
 
                 while (isActive) {
@@ -163,6 +164,7 @@ private class Aria2Sidecar private constructor(
     private val requestIds = AtomicLong(0L)
     private val gidsByKey = ConcurrentHashMap<String, String>()
     private val sourceByKey = ConcurrentHashMap<String, String>()
+    private val identityByKey = ConcurrentHashMap<String, String>()
 
     suspend fun startOrResume(
         key: String,
@@ -170,6 +172,7 @@ private class Aria2Sidecar private constructor(
         headers: Map<String, String>,
         directory: File,
         outputFileName: String,
+        stableContentIdentity: String?,
     ): String {
         val partial = File(directory, outputFileName)
         val existing = gidsByKey[key]
@@ -177,25 +180,29 @@ private class Aria2Sidecar private constructor(
             // A failed RPC must never turn into a second writer for the same .part file.
             val previousUrl = sourceByKey[key]
                 ?: error("Previous aria2 source unavailable; partial retained")
+            val previousIdentity = identityByKey[key]
             if (previousUrl != url) {
-                // Without a verified strong validator, a new signed URL may point at
-                // different content of the same length. Keep every downloaded byte
-                // intact rather than silently mixing files.
-                check(tellStatus(existing).completedLength == 0L &&
-                    (!partial.exists() || partial.length() == 0L)) {
-                    "Cannot refresh a nonempty partial without verified file identity; partial retained"
+                val hasBytes = tellStatus(existing).completedLength > 0L ||
+                    (partial.exists() && partial.length() > 0L)
+                if (hasBytes) {
+                    check(!stableContentIdentity.isNullOrBlank() && stableContentIdentity == previousIdentity) {
+                        "Cannot refresh a nonempty partial without matching stable file identity; partial retained"
+                    }
                 }
                 changeUri(existing, previousUrl, url)
                 sourceByKey[key] = url
+                stableContentIdentity?.let { identityByKey[key] = it }
             }
             rpc("aria2.unpause", JsonArray(listOf(token(), JsonPrimitive(existing))))
             return existing
         }
 
-        // A fresh aria2 sidecar has no trusted source/ETag record for a saved
-        // .part (including a legacy native-HTTP partial). Never reinterpret it.
-        check(!partial.exists() || partial.length() == 0L) {
-            "Cannot resume pre-existing partial without verified file identity; partial retained"
+        val ariaControl = File(partial.absolutePath + ".aria2")
+        val hasPreExistingPartial = partial.exists() && partial.length() > 0L
+        if (hasPreExistingPartial) {
+            check(!stableContentIdentity.isNullOrBlank() && ariaControl.exists() && ariaControl.length() > 0L) {
+                "Cannot resume pre-existing partial without stable file identity and aria2 control state; partial retained"
+            }
         }
 
         val headerValues = headers
@@ -233,6 +240,7 @@ private class Aria2Sidecar private constructor(
             ?: error("aria2 did not return a download id")
         gidsByKey[key] = gid
         sourceByKey[key] = url
+        stableContentIdentity?.let { identityByKey[key] = it }
         return gid
     }
 
@@ -277,6 +285,7 @@ private class Aria2Sidecar private constructor(
     suspend fun remove(key: String) {
         val gid = gidsByKey.remove(key) ?: return
         sourceByKey.remove(key)
+        identityByKey.remove(key)
         runCatching {
             rpc("aria2.forceRemove", JsonArray(listOf(token(), JsonPrimitive(gid))))
         }
@@ -286,7 +295,10 @@ private class Aria2Sidecar private constructor(
     }
 
     fun forget(key: String, gid: String) {
-        if (gidsByKey.remove(key, gid)) sourceByKey.remove(key)
+        if (gidsByKey.remove(key, gid)) {
+            sourceByKey.remove(key)
+            identityByKey.remove(key)
+        }
     }
 
     private suspend fun changeUri(gid: String, previousUrl: String, updatedUrl: String) {
