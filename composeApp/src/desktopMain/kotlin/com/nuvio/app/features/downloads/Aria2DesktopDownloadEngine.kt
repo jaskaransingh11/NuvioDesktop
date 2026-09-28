@@ -60,6 +60,7 @@ internal class Aria2DesktopDownloadEngine private constructor(
                     headers = request.sourceHeaders,
                     directory = directory,
                     outputFileName = partial.name,
+                    request = request,
                 )
 
                 while (isActive) {
@@ -71,12 +72,13 @@ internal class Aria2DesktopDownloadEngine private constructor(
                     when (status.status) {
                         "complete" -> {
                             sidecar.forget(request.destinationFileName, gid)
-                            if (destination.exists()) destination.delete()
+                            check(!destination.exists()) { "Destination already exists; partial retained" }
                             if (!partial.renameTo(destination)) {
-                                partial.copyTo(destination, overwrite = true)
+                                partial.copyTo(destination, overwrite = false)
                                 partial.delete()
                             }
                             File(partial.absolutePath + ".aria2").delete()
+                            sidecar.clearVerifiedIdentity(partial)
                             val finalSize = destination.length()
                             onSuccess(destination.toURI().toString(), total ?: finalSize)
                             return@launch
@@ -163,6 +165,7 @@ private class Aria2Sidecar private constructor(
     private val requestIds = AtomicLong(0L)
     private val gidsByKey = ConcurrentHashMap<String, String>()
     private val sourceByKey = ConcurrentHashMap<String, String>()
+    private val verifiedSource = VerifiedResumeSource()
 
     suspend fun startOrResume(
         key: String,
@@ -170,6 +173,7 @@ private class Aria2Sidecar private constructor(
         headers: Map<String, String>,
         directory: File,
         outputFileName: String,
+        request: DownloadPlatformRequest,
     ): String {
         val partial = File(directory, outputFileName)
         val existing = gidsByKey[key]
@@ -178,25 +182,22 @@ private class Aria2Sidecar private constructor(
             val previousUrl = sourceByKey[key]
                 ?: error("Previous aria2 source unavailable; partial retained")
             if (previousUrl != url) {
-                // Without a verified strong validator, a new signed URL may point at
-                // different content of the same length. Keep every downloaded byte
-                // intact rather than silently mixing files.
-                check(tellStatus(existing).completedLength == 0L &&
-                    (!partial.exists() || partial.length() == 0L)) {
-                    "Cannot refresh a nonempty partial without verified file identity; partial retained"
-                }
+                // Validate the old .part and new HTTP representation BEFORE
+                // replacing a signed link. A matching byte count is not identity.
+                val proof = verifiedSource.inspectAndBind(request, partial)
                 changeUri(existing, previousUrl, url)
+                if (proof.ifRangeEtag != null) {
+                    setSafeResumeHeaders(existing, headers, proof.ifRangeEtag)
+                }
                 sourceByKey[key] = url
             }
             rpc("aria2.unpause", JsonArray(listOf(token(), JsonPrimitive(existing))))
             return existing
         }
 
-        // A fresh aria2 sidecar has no trusted source/ETag record for a saved
-        // .part (including a legacy native-HTTP partial). Never reinterpret it.
-        check(!partial.exists() || partial.length() == 0L) {
-            "Cannot resume pre-existing partial without verified file identity; partial retained"
-        }
+        // A restarted sidecar must prove persisted source and byte identity,
+        // including the old aria2 bitfield. Legacy unverified parts remain safe.
+        val resume = verifiedSource.inspectAndBind(request, partial)
 
         val headerValues = headers
             .filter { (name, value) -> name.isNotBlank() && value.isNotBlank() }
@@ -206,6 +207,7 @@ private class Aria2Sidecar private constructor(
             put("dir", JsonPrimitive(directory.absolutePath))
             put("out", JsonPrimitive(outputFileName))
             put("continue", JsonPrimitive("true"))
+            if (resume.resumeExistingPartial) put("always-resume", JsonPrimitive("true"))
             put("split", JsonPrimitive("4"))
             put("max-connection-per-server", JsonPrimitive("4"))
             put("min-split-size", JsonPrimitive("16M"))
@@ -216,7 +218,9 @@ private class Aria2Sidecar private constructor(
             put("auto-file-renaming", JsonPrimitive("false"))
             put("allow-overwrite", JsonPrimitive("true"))
             put("file-allocation", JsonPrimitive("none"))
-            if (headerValues.isNotEmpty()) {
+            if (resume.ifRangeEtag != null) {
+                put("header", JsonArray(headerValues + JsonPrimitive("If-Range: " + resume.ifRangeEtag)))
+            } else if (headerValues.isNotEmpty()) {
                 put("header", JsonArray(headerValues))
             }
         }
@@ -285,6 +289,32 @@ private class Aria2Sidecar private constructor(
         }
     }
 
+    fun clearVerifiedIdentity(partial: File) {
+        verifiedSource.forget(partial)
+    }
+
+    private suspend fun setSafeResumeHeaders(
+        gid: String,
+        headers: Map<String, String>,
+        strongEtag: String,
+    ) {
+        val values = headers
+            .filter { (key, value) ->
+                key.isNotBlank() && value.isNotBlank() &&
+                    !key.equals("Range", ignoreCase = true) &&
+                    !key.equals("If-Range", ignoreCase = true)
+            }
+            .map { (key, value) -> JsonPrimitive("$key: $value") } +
+            JsonPrimitive("If-Range: $strongEtag")
+        rpc(
+            "aria2.changeOption",
+            buildJsonArray {
+                add(token())
+                add(JsonPrimitive(gid))
+                add(buildJsonObject { put("header", JsonArray(values)) })
+            },
+        )
+    }
     fun forget(key: String, gid: String) {
         if (gidsByKey.remove(key, gid)) sourceByKey.remove(key)
     }
