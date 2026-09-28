@@ -29,6 +29,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
+import java.security.MessageDigest
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -446,25 +447,20 @@ private fun JsonObject.string(name: String): String? =
     this[name]?.jsonPrimitive?.contentOrNull
 
 private fun locateAria2Executable(): File? {
-    val candidates = buildList {
-        System.getenv("NUVIO_ARIA2_PATH")
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?.let(::File)
-            ?.let(::add)
+    System.getenv("NUVIO_ARIA2_PATH")
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?.let(::File)
+        ?.takeIf { it.isFile }
+        ?.let { return it }
 
-        System.getenv("LOCALAPPDATA")
-            ?.takeIf { it.isNotBlank() }
-            ?.let { File(it, "Nuvio/tools/aria2c.exe") }
-            ?.let(::add)
+    extractBundledAria2()?.let { return it }
 
-        System.getenv("ChocolateyInstall")
-            ?.takeIf { it.isNotBlank() }
-            ?.let { File(it, "bin/aria2c.exe") }
-            ?.let(::add)
-    }
-
-    candidates.firstOrNull { it.isFile }?.let { return it }
+    System.getenv("ChocolateyInstall")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { File(it, "bin/aria2c.exe") }
+        ?.takeIf { it.isFile }
+        ?.let { return it }
 
     val pathResult = runCatching {
         ProcessBuilder("where.exe", "aria2c.exe")
@@ -482,4 +478,69 @@ private fun locateAria2Executable(): File? {
     return pathResult?.trim()?.takeIf { it.isNotBlank() }?.let(::File)?.takeIf { it.isFile }
 }
 
+private fun extractBundledAria2(): File? {
+    val localAppData = System.getenv("LOCALAPPDATA")?.takeIf { it.isNotBlank() } ?: return null
+    val dir = File(localAppData, "Nuvio/tools").apply { mkdirs() }
+    val target = File(dir, "aria2c.exe")
+    if (target.isFile && target.length() > 1_000_000L && target.sha256Hex() == BUNDLED_ARIA2_SHA256) {
+        extractBundledAria2Notices(dir)
+        return target
+    }
+
+    val stream = Aria2DesktopDownloadEngine::class.java.getResourceAsStream(BUNDLED_ARIA2_RESOURCE)
+        ?: return null
+    val temp = File(dir, "aria2c.exe.tmp")
+    runCatching {
+        stream.use { input ->
+            temp.outputStream().use { output -> input.copyTo(output) }
+        }
+        check(temp.length() > 1_000_000L && temp.sha256Hex() == BUNDLED_ARIA2_SHA256) {
+            "Bundled aria2 checksum mismatch"
+        }
+        if (target.exists() && !target.delete()) error("Unable to replace bundled aria2")
+        if (!temp.renameTo(target)) {
+            temp.copyTo(target, overwrite = true)
+            temp.delete()
+        }
+        target.setExecutable(true)
+        extractBundledAria2Notices(dir)
+        target
+    }.getOrElse {
+        temp.delete()
+        null
+    }
+}
+
+private fun extractBundledAria2Notices(dir: File) {
+    listOf(
+        BUNDLED_ARIA2_COPYING_RESOURCE to "aria2-COPYING.txt",
+        BUNDLED_ARIA2_OPENSSL_LICENSE_RESOURCE to "aria2-LICENSE.OpenSSL.txt",
+    ).forEach { (resource, fileName) ->
+        val target = File(dir, fileName)
+        if (target.isFile && target.length() > 0L) return@forEach
+        Aria2DesktopDownloadEngine::class.java.getResourceAsStream(resource)?.use { input ->
+            runCatching {
+                target.outputStream().use { output -> input.copyTo(output) }
+            }
+        }
+    }
+}
+
+private fun File.sha256Hex(): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    inputStream().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count <= 0) break
+            digest.update(buffer, 0, count)
+        }
+    }
+    return digest.digest().joinToString("") { byte -> "%02X".format(byte) }
+}
+
+private const val BUNDLED_ARIA2_RESOURCE = "/aria2/windows-amd64/aria2c.exe"
+private const val BUNDLED_ARIA2_COPYING_RESOURCE = "/aria2/windows-amd64/COPYING"
+private const val BUNDLED_ARIA2_OPENSSL_LICENSE_RESOURCE = "/aria2/windows-amd64/LICENSE.OpenSSL"
+private const val BUNDLED_ARIA2_SHA256 = "BE2099C214F63A3CB4954B09A0BECD6E2E34660B886D4C898D260FEBFE9D70C2"
 private const val ARIA2_POLL_INTERVAL_MS = 500L

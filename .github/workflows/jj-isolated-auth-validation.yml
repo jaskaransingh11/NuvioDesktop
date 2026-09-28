@@ -65,9 +65,10 @@ jobs:
       - name: Fetch native Windows runtime from Git LFS
         shell: bash
         run: |
-          git lfs pull --include="composeApp/src/desktopMain/native/windows/runtime/**,composeApp/src/desktopMain/resources/torrserver/windows-amd64/TorrServer.exe" --exclude=""
+          git lfs pull --include="composeApp/src/desktopMain/native/windows/runtime/**,composeApp/src/desktopMain/resources/torrserver/windows-amd64/TorrServer.exe,composeApp/src/desktopMain/resources/aria2/windows-amd64/aria2c.exe" --exclude=""
           test -s composeApp/src/desktopMain/native/windows/runtime/libmpv-2.dll
           test -s composeApp/src/desktopMain/resources/torrserver/windows-amd64/TorrServer.exe
+          test -s composeApp/src/desktopMain/resources/aria2/windows-amd64/aria2c.exe
       - name: Install WebView2 native SDK
         shell: pwsh
         run: |
