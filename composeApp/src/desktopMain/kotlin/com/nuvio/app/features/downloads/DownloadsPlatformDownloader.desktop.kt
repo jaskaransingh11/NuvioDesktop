@@ -11,8 +11,10 @@ private val downloadsDirectoryProvider: () -> File = {
 }
 
 private val desktopDownloadEngine: DesktopDownloadEngine by lazy {
+    // Never silently downgrade to legacy HTTP: it cannot prove identity of
+    // pre-existing partial bytes and previously deleted them on HTTP 416/200.
     Aria2DesktopDownloadEngine.createOrNull(downloadsDirectoryProvider)
-        ?: HttpDesktopDownloadEngine(downloadsDirectoryProvider)
+        ?: UnavailableDesktopDownloadEngine()
 }
 
 internal actual object DownloadsPlatformDownloader {
@@ -47,11 +49,17 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     actual fun removePartialFile(destinationFileName: String): Boolean {
-        (desktopDownloadEngine as? Aria2DesktopDownloadEngine)?.discard(destinationFileName)
+        val sidecarStopped =
+            (desktopDownloadEngine as? Aria2DesktopDownloadEngine)?.discard(destinationFileName) ?: true
+        if (!sidecarStopped) return false
         val tempFile = File(downloadsDir, "$destinationFileName.part")
         val controlFile = File(downloadsDir, "$destinationFileName.part.aria2")
         val tempRemoved = !tempFile.exists() || runCatching { tempFile.delete() }.getOrDefault(false)
         val controlRemoved = !controlFile.exists() || runCatching { controlFile.delete() }.getOrDefault(false)
+        if (tempRemoved && controlRemoved) {
+            File(downloadsDir, "$destinationFileName.part.nuvio-identity.json").delete()
+            DownloadAudit.record(DownloadAudit.Event.CANCEL, destinationFileName)
+        }
         return tempRemoved && controlRemoved
     }
 

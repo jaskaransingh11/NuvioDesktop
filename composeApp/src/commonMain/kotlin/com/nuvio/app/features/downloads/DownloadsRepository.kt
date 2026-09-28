@@ -5,6 +5,7 @@ import com.nuvio.app.features.streams.StreamItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -261,9 +262,17 @@ object DownloadsRepository {
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
 
         activeHandles.remove(downloadId)?.cancel()
+        if (!DownloadsPlatformDownloader.removePartialFile(item.fileName)) {
+            mutateItem(downloadId) { current ->
+                current.copy(
+                    status = DownloadStatus.Failed,
+                    errorMessage = "Cannot confirm the downloader stopped; partial retained",
+                    updatedAtEpochMs = DownloadsClock.nowEpochMs(),
+                )
+            }
+            return
+        }
         DownloadsPlatformDownloader.removeFile(playableLocalFileUri(item) ?: item.localFileUri)
-        DownloadsPlatformDownloader.removePartialFile(item.fileName)
-
         publish(_uiState.value.items.filterNot { it.id == downloadId })
         persist()
     }
@@ -342,8 +351,32 @@ object DownloadsRepository {
             onFailure = onFailure@ { message ->
                 activeHandles.remove(item.id)
                 val current = _uiState.value.items.firstOrNull { it.id == item.id }
-                if (current?.status == DownloadStatus.Downloading && attempt < MaxDownloadAttempts) {
-                    startDownload(current, attempt + 1, sourceRefreshAttempted)
+                if (current?.status != DownloadStatus.Downloading) return@onFailure
+                // A 429 is a provider instruction to stop, not to hammer the
+                // same expiring link three more times. 401/403/416 should
+                // resolve a fresh source instead of retrying the dead URL.
+                if (message.startsWith("Verified downloader unavailable:")) {
+                    markDownloadFailed(item.id, message)
+                    return@onFailure
+                }
+                val retryDelay = downloadRetryDelayMs(message, attempt)
+                if (retryDelay == null && message.contains("429")) {
+                    markDownloadFailed(item.id, message)
+                    return@onFailure
+                }
+                if (retryDelay != null) {
+                    val expectedStamp = current.updatedAtEpochMs
+                    val expectedUrl = current.sourceUrl
+                    downloadScope.launch {
+                        delay(retryDelay)
+                        val latest = _uiState.value.items.firstOrNull { it.id == item.id }
+                        if (latest?.status == DownloadStatus.Downloading &&
+                            latest.updatedAtEpochMs == expectedStamp &&
+                            latest.sourceUrl == expectedUrl
+                        ) {
+                            startDownload(latest, attempt + 1, sourceRefreshAttempted)
+                        }
+                    }
                     return@onFailure
                 }
 
@@ -501,6 +534,15 @@ private object DownloadsCodec {
         )
 }
 
+/**
+ * Retry only recoverable transfer errors. Provider denial/rate limit and an
+ * invalid byte range require a new source or explicit user retry.
+ */
+internal fun downloadRetryDelayMs(message: String, attempt: Int): Long? {
+    if (attempt >= 3) return null
+    if (listOf("429", "403", "401", "416").any { it in message }) return null
+    return attempt.coerceAtLeast(1) * 1_500L
+}
 private fun sanitizeRequestHeaders(headers: Map<String, String>?): Map<String, String> =
     headers
         .orEmpty()
