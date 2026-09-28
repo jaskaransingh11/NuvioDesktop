@@ -358,7 +358,8 @@ object DownloadsRepository {
                 if (message.startsWith("Verified downloader unavailable:")) {
                     markDownloadFailed(item.id, message)
                     return@onFailure
-                }                val retryDelay = downloadRetryDelayMs(message, attempt)
+                }
+                val retryDelay = downloadRetryDelayMs(message, attempt)
                 if (retryDelay == null && message.contains("429")) {
                     markDownloadFailed(item.id, message)
                     return@onFailure
