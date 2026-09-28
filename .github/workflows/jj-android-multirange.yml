@@ -21,12 +21,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
-      - name: Checkout patch-only workspace
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            ports/nuvio-mobile
+      # The Desktop fork contains a legacy gitlink without matching .gitmodules
+      # metadata. actions/checkout fails its submodule cleanup even with
+      # submodules=false, so fetch only the committed patch from the public repo.
+      - name: Fetch committed Android patch
+        run: |
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/ports/nuvio-mobile/android-multirange.patch" \
+            --output android-multirange.patch
+          test -s android-multirange.patch
 
       - name: Checkout pinned NuvioMobile source
         run: |
@@ -34,8 +37,8 @@ jobs:
           cd mobile
           git fetch --quiet --depth 1 origin fc4608d2928c805fdf368399bff39f17bb55b4da
           git checkout --quiet --detach fc4608d2928c805fdf368399bff39f17bb55b4da
-          git apply --check ../ports/nuvio-mobile/android-multirange.patch
-          git apply ../ports/nuvio-mobile/android-multirange.patch
+          git apply --check ../android-multirange.patch
+          git apply ../android-multirange.patch
           touch local.properties
 
       - name: Java 17
