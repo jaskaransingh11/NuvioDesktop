@@ -355,7 +355,10 @@ object DownloadsRepository {
                 // A 429 is a provider instruction to stop, not to hammer the
                 // same expiring link three more times. 401/403/416 should
                 // resolve a fresh source instead of retrying the dead URL.
-                val retryDelay = downloadRetryDelayMs(message, attempt)
+                if (message.startsWith("Verified downloader unavailable:")) {
+                    markDownloadFailed(item.id, message)
+                    return@onFailure
+                }                val retryDelay = downloadRetryDelayMs(message, attempt)
                 if (retryDelay == null && message.contains("429")) {
                     markDownloadFailed(item.id, message)
                     return@onFailure
