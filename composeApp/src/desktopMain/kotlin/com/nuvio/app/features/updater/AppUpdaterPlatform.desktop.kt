@@ -53,11 +53,12 @@ actual object AppUpdaterPlatform {
         get() = currentOs != DesktopUpdaterOs.UNKNOWN && linuxInstallMethod != LinuxInstallMethod.FLATPAK
 
     actual val releaseSource: AppUpdateReleaseSource = AppUpdateReleaseSource(
-        owner = "NuvioMedia",
+        // JJ builds must never suggest installers from the upstream Nuvio repository.
+        owner = "jaskaransingh11",
         repo = "NuvioDesktop",
         channelBranch = null,
         includePrereleases = true,
-        userAgent = "NuvioDesktop",
+        userAgent = "NuvioJJ",
     )
 
     actual val assetSelector: AppUpdateAssetSelector
