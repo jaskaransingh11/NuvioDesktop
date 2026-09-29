@@ -1,0 +1,87 @@
+name: JJ Safe Upstream Intake
+
+on:
+  schedule:
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: jj-safe-upstream-intake
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: jj/maintained
+          fetch-depth: 0
+          lfs: false
+          persist-credentials: false
+      - name: Unit-test the fail-closed intake filter
+        shell: pwsh
+        run: python -m unittest discover -s .github/scripts -p test_jj_upstream_gate.py
+      - name: Fetch official Nuvio safely
+        shell: pwsh
+        run: |
+          git remote add official https://github.com/NuvioMedia/NuvioDesktop.git
+          git fetch official Dev --no-tags
+          git config user.name "jj-upstream-bot"
+          git config user.email "jj-upstream-bot@users.noreply.github.com"
+          git merge-base --is-ancestor official/Dev HEAD
+          if ($LASTEXITCODE -eq 0) {
+            "JJ_SYNC_CHANGED=false" >> $env:GITHUB_ENV
+            Write-Output "No new upstream commits."
+            exit 0
+          }
+          git merge --no-commit --no-ff --no-edit official/Dev
+          if ($LASTEXITCODE -ne 0) {
+            git diff --name-only --diff-filter=U
+            git merge --abort
+            throw "Upstream merge conflict: requires a reviewed integration."
+          }
+          git diff --cached --name-only | python .github/scripts/jj_upstream_gate.py
+          if ($LASTEXITCODE -ne 0) {
+            git merge --abort
+            throw "Guarded file changed: no automatic JJ update."
+          }
+          git commit -m "chore(jj): integrate compatible upstream Dev"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to commit intake" }
+          "JJ_SYNC_CHANGED=true" >> $env:GITHUB_ENV
+      - uses: actions/setup-java@v5
+        if: env.JJ_SYNC_CHANGED == 'true'
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        if: env.JJ_SYNC_CHANGED == 'true'
+        with:
+          cache-provider: basic
+          cache-read-only: true
+      - name: Compile and validate JJ updater
+        if: env.JJ_SYNC_CHANGED == 'true'
+        shell: pwsh
+        run: |
+          $content = Get-Content gradle.properties
+          $content = $content -replace '^org\.gradle\.jvmargs=.*$', 'org.gradle.jvmargs=-Xmx4096M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m'
+          $content = $content -replace '^kotlin\.daemon\.jvmargs=.*$', 'kotlin.daemon.jvmargs=-Xmx3072M'
+          $content += 'kotlin.compiler.execution.strategy=in-process'
+          Set-Content gradle.properties $content
+          .\gradlew.bat :composeApp:compileKotlinDesktop --no-configuration-cache --no-daemon --max-workers=2
+          if ($LASTEXITCODE -ne 0) { throw "Desktop compile failed" }
+          .\gradlew.bat :composeApp:desktopTest --tests "com.nuvio.app.features.updater.JJReleaseSourceTest" --tests "com.nuvio.app.features.downloads.DownloadContentIdentityTest" --tests "com.nuvio.app.features.downloads.Aria2ResumeIdentityTest" --tests "com.nuvio.app.features.downloads.DownloadFailurePolicyTest" -x :composeApp:buildWindowsPlayerBridge --no-configuration-cache --no-daemon --max-workers=2
+          if ($LASTEXITCODE -ne 0) { throw "JJ regression tests failed" }
+      - name: Advance JJ source only (never install)
+        if: env.JJ_SYNC_CHANGED == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth setup-git
+          git push origin "HEAD:refs/heads/jj/maintained"
+          if ($LASTEXITCODE -ne 0) { throw "JJ branch moved; review and retry" }
