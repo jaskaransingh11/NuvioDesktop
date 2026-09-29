@@ -17,13 +17,13 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: jj/maintained
-          # Full-history checkout recurses an upstream gitlink missing a URL.
-          fetch-depth: 1
-          lfs: false
-          persist-credentials: false
+      - name: Clone JJ without recursing into broken upstream gitlink
+        shell: pwsh
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          git -c submodule.recurse=false clone --depth 1 --single-branch --no-recurse-submodules --branch jj/maintained https://github.com/jaskaransingh11/NuvioDesktop.git .
+          if ($LASTEXITCODE -ne 0) { throw "JJ source clone failed" }
       - name: Unit-test the fail-closed intake filter
         shell: pwsh
         run: python -m unittest discover -s .github/scripts -p test_jj_upstream_gate.py
