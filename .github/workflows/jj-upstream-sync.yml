@@ -20,7 +20,8 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: jj/maintained
-          fetch-depth: 0
+          # Full-history checkout recurses an upstream gitlink missing a URL.
+          fetch-depth: 1
           lfs: false
           persist-credentials: false
       - name: Unit-test the fail-closed intake filter
@@ -29,8 +30,11 @@ jobs:
       - name: Fetch official Nuvio safely
         shell: pwsh
         run: |
+          git -c fetch.recurseSubmodules=false fetch --unshallow --no-tags origin jj/maintained
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch JJ history" }
           git remote add official https://github.com/NuvioMedia/NuvioDesktop.git
-          git fetch official Dev --no-tags
+          git fetch official Dev --no-tags --recurse-submodules=no
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch upstream history" }
           git config user.name "jj-upstream-bot"
           git config user.email "jj-upstream-bot@users.noreply.github.com"
           git merge-base --is-ancestor official/Dev HEAD
