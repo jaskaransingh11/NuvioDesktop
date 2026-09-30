@@ -64,7 +64,7 @@ internal fun interface SimklHttpEngine {
 
 internal class SimklApiClient(
     private val engine: SimklHttpEngine,
-    private val accessToken: () -> String?,
+    private val accessToken: suspend () -> String?,
     private val onUnauthorized: () -> Unit,
     private val nowEpochMs: () -> Long = SimklPlatformClock::nowEpochMs,
     private val sleep: suspend (Long) -> Unit = { delayMs -> delay(delayMs) },
@@ -75,7 +75,8 @@ internal class SimklApiClient(
     private var nextGetAtEpochMs = 0L
     private var nextPostAtEpochMs = 0L
 
-    suspend fun execute(request: SimklApiRequest): SimklApiResponse = requestMutex.withLock {
+    suspend fun execute(request: SimklApiRequest): SimklApiResponse {
+        // Resolve/refresh credentials before taking the HTTP mutex: refresh itself uses this client.
         val token = if (request.requiresAuthentication) {
             accessToken()?.takeIf(String::isNotBlank)
                 ?: throw SimklApiException(
@@ -87,6 +88,7 @@ internal class SimklApiClient(
             null
         }
 
+        return requestMutex.withLock {
         val maxAttempts = when (request.retryPolicy) {
             SimklRetryPolicy.TRANSIENT_FAILURES,
             SimklRetryPolicy.SYNC_WRITE,
@@ -164,6 +166,7 @@ internal class SimklApiClient(
         }
 
         error("Simkl request loop completed without a response")
+        }
     }
 
     private suspend fun <T> executeRateLimited(

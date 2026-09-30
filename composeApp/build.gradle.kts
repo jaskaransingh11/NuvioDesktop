@@ -135,7 +135,7 @@ abstract class GenerateRuntimeConfigsTask : DefaultTask() {
                 |package com.nuvio.app.features.simkl
                 |
                 |object SimklConfig {
-                |    const val CLIENT_ID = "${props.getProperty("SIMKL_CLIENT_ID", "")}"
+                |    const val CLIENT_ID = "${props.getProperty("SIMKL_CLIENT_ID")?.takeIf(String::isNotBlank) ?: "942c57c637711ad6ffd64009f6e1acc508bf19a9137194470643c54cab240d5b"}"
                 |    const val REDIRECT_URI = "${props.getProperty("SIMKL_REDIRECT_URI", "nuvio://auth/simkl")}"
                 |    const val APP_NAME = "${props.getProperty("SIMKL_APP_NAME", "nuvio")}"
                 |}

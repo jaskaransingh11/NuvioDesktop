@@ -22,6 +22,7 @@ internal actual object SimklPkceCrypto {
 internal actual object SimklAuthStorage {
     private const val metadataKey = "simkl_auth_metadata"
     private const val accessTokenKey = "simkl_access_token"
+    private const val refreshTokenKey = "simkl_refresh_token"
     private const val codeVerifierKey = "simkl_code_verifier"
     private val store = DesktopStorage.store("nuvio_simkl_auth")
 
@@ -39,6 +40,13 @@ internal actual object SimklAuthStorage {
         store.putString(ProfileScopedKey.of(accessTokenKey), value)
     }
 
+    actual fun loadRefreshToken(): String? =
+        store.getString(ProfileScopedKey.of(refreshTokenKey))
+
+    actual fun saveRefreshToken(value: String?) {
+        store.putString(ProfileScopedKey.of(refreshTokenKey), value)
+    }
+
     actual fun loadCodeVerifier(): String? =
         store.getString(ProfileScopedKey.of(codeVerifierKey))
 
@@ -51,6 +59,7 @@ internal actual object SimklAuthStorage {
             listOf(
                 ProfileScopedKey.of(metadataKey, profileId),
                 ProfileScopedKey.of(accessTokenKey, profileId),
+                ProfileScopedKey.of(refreshTokenKey, profileId),
                 ProfileScopedKey.of(codeVerifierKey, profileId),
             ),
         )

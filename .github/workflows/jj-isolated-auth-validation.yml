@@ -2,7 +2,7 @@ name: JJ Isolated Desktop Auth Validation
 
 on:
   push:
-    branches: [fix/desktop-test-auth-storage-20260927, fix/download-container-extension-20260927, fix/production-resume-guards-20260928, release/nuvio-1.1.27-canary-20260928, fix/nuvio-nondestructive-enqueue-20260928]
+    branches: [fix/desktop-test-auth-storage-20260927, fix/download-container-extension-20260927, fix/production-resume-guards-20260928, release/nuvio-1.1.27-canary-20260928, fix/nuvio-nondestructive-enqueue-20260928, feature/simkl-auth-v2-20260930]
   workflow_dispatch:
 
 permissions:
@@ -59,6 +59,9 @@ jobs:
       - name: Run pure desktop auth-isolation tests without native player bridge
         shell: pwsh
         run: .\gradlew.bat :composeApp:desktopTest --tests "com.nuvio.app.core.network.PlatformAuthSessionManagerTest" -x :composeApp:buildWindowsPlayerBridge --no-configuration-cache --no-daemon --max-workers=2
+      - name: Run full Simkl V2 integration regression tests
+        shell: pwsh
+        run: .\gradlew.bat :composeApp:desktopTest --tests "com.nuvio.app.features.simkl.*" -x :composeApp:buildWindowsPlayerBridge --no-configuration-cache --no-daemon --max-workers=2
       - name: Run download filename extension regression tests
         shell: pwsh
         run: .\gradlew.bat :composeApp:desktopTest --tests "com.nuvio.app.features.downloads.*" -x :composeApp:buildWindowsPlayerBridge --no-configuration-cache --no-daemon --max-workers=2
@@ -81,7 +84,7 @@ jobs:
         run: .\.github\scripts\prepare-aria2-windows.ps1
       - name: Build standalone MSI with validated client config
         shell: pwsh
-        run: .\gradlew.bat :composeApp:packageReleaseMsi "-Pnuvio.desktop.versionName=1.1.27" "-Pnuvio.desktop.versionCode=27" "-Pnuvio.webview2.dir=$env:WEBVIEW2_ROOT" "-Pcompose.desktop.packaging.checkJdkVendor=false" --no-configuration-cache --no-daemon --max-workers=2
+        run: .\gradlew.bat :composeApp:packageReleaseMsi "-Pnuvio.desktop.versionName=1.1.28" "-Pnuvio.desktop.versionCode=28" "-Pnuvio.webview2.dir=$env:WEBVIEW2_ROOT" "-Pcompose.desktop.packaging.checkJdkVendor=false" --no-configuration-cache --no-daemon --max-workers=2
       - name: Verify packaged aria2 executable and license by MSI extraction
         shell: pwsh
         run: |
@@ -101,15 +104,15 @@ jobs:
             }
           }
           $actualVersion = [string](Read-MsiProperty 'ProductVersion')
-          Write-Output ("Canary MSI ProductVersion = '" + $actualVersion + "'")
-          if ($actualVersion.Trim() -ne '1.1.27') { throw 'MSI is not version 1.1.27' }
+          Write-Output ("Simkl V2 MSI ProductVersion = '" + $actualVersion + "'")
+          if ($actualVersion.Trim() -ne '1.1.28') { throw 'MSI is not version 1.1.28' }
           if ((Read-MsiProperty 'UpgradeCode') -ne '{395990EE-9B8A-3548-922C-E7A23A495B8D}') {
             throw 'MSI UpgradeCode differs from the installed 1.1.26 product'
           }
           if ((Read-MsiProperty 'ProductCode') -eq '{47543BAA-CD50-3953-8556-D4EF6DE8508B}') {
             throw 'Canary MSI ProductCode collides with installed 1.1.26'
           }
-          Write-Output 'Verified distinct 1.1.27 ProductCode and preserved upgrade lineage.'
+          Write-Output 'Verified distinct 1.1.28 ProductCode and preserved upgrade lineage.'
           $target = Join-Path $env:RUNNER_TEMP 'jj-msi-aria2-acceptance'
           New-Item -ItemType Directory -Force -Path $target | Out-Null
           $msiCommand = @('/a', ('"' + $msi.FullName + '"'), '/qn', ('TARGETDIR="' + $target + '"'))
@@ -127,7 +130,7 @@ jobs:
       - name: Upload standalone MSI only
         uses: actions/upload-artifact@v6
         with:
-          name: nuvio-isolated-auth-msi-${{ github.run_id }}
+          name: nuvio-simkl-v2-msi-${{ github.run_id }}
           path: composeApp/build/compose/release-msis/*.msi
           if-no-files-found: error
           retention-days: 14
