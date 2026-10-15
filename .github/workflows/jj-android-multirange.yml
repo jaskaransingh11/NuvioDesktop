@@ -2,7 +2,7 @@ name: JJ NuvioMobile Multirange Prototype
 
 on:
   push:
-    branches: [feature/mobile-multirange-prototype-20260929]
+    branches: [feature/mobile-multirange-prototype-20260929, jj/android-october-ci-20261015]
     paths:
       - "ports/nuvio-mobile/**"
       - ".github/workflows/jj-android-multirange.yml"
@@ -35,8 +35,8 @@ jobs:
         run: |
           git clone --quiet --depth 1 --filter=blob:none --branch cmp-rewrite https://github.com/NuvioMedia/NuvioMobile.git mobile
           cd mobile
-          git fetch --quiet --depth 1 origin fc4608d2928c805fdf368399bff39f17bb55b4da
-          git checkout --quiet --detach fc4608d2928c805fdf368399bff39f17bb55b4da
+          git fetch --quiet --depth 1 origin 779c145a5eb3814c70511f4b8c41e1dbd7b1a091
+          git checkout --quiet --detach 779c145a5eb3814c70511f4b8c41e1dbd7b1a091
           git apply --check ../android-multirange.patch
           git apply ../android-multirange.patch
           touch local.properties
